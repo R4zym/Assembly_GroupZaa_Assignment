@@ -1,0 +1,1290 @@
+Microsoft (R) Macro Assembler Version 14.51.36248.0	    09/21/26 15:50:01
+.DES Module A - Shell Core & FSM Command Parse		     Page 1 - 1
+
+
+				TITLE DES Module A - Shell Core & FSM Command Parser
+
+				.386
+				.model flat, stdcall
+				.stack 4096
+
+				INCLUDE C:\Irvine\Irvine32.inc
+			      C ; Include file for Irvine32.lib             (Irvine32.inc)
+			      C 
+			      C ;OPTION CASEMAP:NONE		; optional: make identifiers case-sensitive
+			      C 
+			      C INCLUDE SmallWin.inc		; MS-Windows prototypes, structures, and constants
+			      C .NOLIST
+			      C ; Include file for Calling Windows API Functions      (SmallWin.inc)
+			      C 
+			      C ; Recent updates:
+			      C ;  7/16/05  (printf, scanf)
+			      C 
+			      C ; To enable columns to line up properly, set your text editor's Tab
+			      C ; settings to 5, 35, and 40.
+			      C 
+			      C .686P		; Pentium Pro or later
+			      C .MODEL flat, stdcall
+C:\Irvine\SmallWin.inc(11) : warning A4011:multiple .MODEL directives found : .MODEL ignored
+			      C .STACK 4096
+			      C 
+			      C ;--------- my own constants --------------
+ = 00000000		      C DO_NOT_SHARE = 0
+ = 00000000		      C NULL = 0
+ = 00000001		      C TRUE = 1
+ = 00000000		      C FALSE = 0
+ = 00000009		      C TAB = 9		; ASCII code for Horiz Tab
+			      C ;-----------------------------------------
+			      C 
+ = DWORD		      C HANDLE TEXTEQU <DWORD>		; used in Win32 API documentation
+			      C 
+			      C ; Win32 Console handles
+ =-0000000A		      C STD_INPUT_HANDLE EQU -10
+ =-0000000B		      C STD_OUTPUT_HANDLE EQU -11		; predefined Win API constant
+ =-0000000C		      C STD_ERROR_HANDLE EQU -12
+			      C 
+			      C ;  Input Mode flags (used by GetConsoleMode & SetConsoleMode):
+ = 00000001		      C ENABLE_PROCESSED_INPUT = 1
+ = 00000002		      C ENABLE_LINE_INPUT      = 2
+ = 00000004		      C ENABLE_ECHO_INPUT      = 4
+ = 00000008		      C ENABLE_WINDOW_INPUT    = 8
+ = 00000010		      C ENABLE_MOUSE_INPUT     = 16
+			      C 
+			      C ; Event constants
+ = 00000001		      C KEY_EVENT       =  1
+ = 00000002		      C MOUSE_EVENT     =  2
+ = 00000004		      C WINDOW_BUFFER_SIZE_EVENT = 4          ; window change event record
+ = 00000008		      C MENU_EVENT      = 8                   ; menu event record
+ = 00000010		      C FOCUS_EVENT     = 16                  ; focus change
+			      C 
+			      C ; ControlKeyState constants (used by ReadKey)
+ = 0000001F		      C KEY_MASKS  = 00011111b		; Mask if any Shift/Ctrl/Alt flag is set
+ = 00000003		      C ALT_MASK   = 00000011b		; Left and right Alt key flags
+ = 0000000C		      C CTRL_MASK  = 00001100b		; Left and right Alt key flags
+ = 00000010		      C SHIFT_MASK = 00010000b		; Left or right Shift key flag
+			      C 
+ = 00000001		      C KBDOWN_FLAG = 00000001h		; Bit set for press, clear for release
+			      C 
+			      C ;  Output mode flags  (used by GetConsoleMode & SetConsoleMode):
+ = 00000001		      C ENABLE_PROCESSED_OUTPUT    = 1
+ = 00000002		      C ENABLE_WRAP_AT_EOL_OUTPUT  = 2
+			      C 
+			      C ; Constants found in WINNT.H
+ = 00000001		      C FILE_SHARE_READ                 = 1
+ = 00000002		      C FILE_SHARE_WRITE                = 2
+ = 00000004		      C FILE_SHARE_DELETE               = 4
+			      C 
+ = 00000001		      C FILE_ATTRIBUTE_READONLY         = 1
+ = 00000002		      C FILE_ATTRIBUTE_HIDDEN           = 2
+ = 00000004		      C FILE_ATTRIBUTE_SYSTEM           = 4
+ = 00000010		      C FILE_ATTRIBUTE_DIRECTORY        = 10h
+ = 00000020		      C FILE_ATTRIBUTE_ARCHIVE          = 20h
+ = 00000040		      C FILE_ATTRIBUTE_DEVICE           = 40h
+ = 00000080		      C FILE_ATTRIBUTE_NORMAL           = 80h
+ = 00000100		      C FILE_ATTRIBUTE_TEMPORARY        = 100h
+ = 00000200		      C FILE_ATTRIBUTE_SPARSE_FILE      = 200h
+ = 00000400		      C FILE_ATTRIBUTE_REPARSE_POINT    = 400h
+ = 00000800		      C FILE_ATTRIBUTE_COMPRESSED       = 800h
+ = 00001000		      C FILE_ATTRIBUTE_OFFLINE          =    1000h
+ = 00002000		      C FILE_ATTRIBUTE_NOT_CONTENT_INDEXED = 2000h
+ = 00004000		      C FILE_ATTRIBUTE_ENCRYPTED           = 4000h
+			      C 
+ = 00000001		      C FILE_READ_DATA = 1
+ = 00000002		      C FILE_WRITE_DATA = 2
+ = 00000004		      C FILE_APPEND_DATA = 4
+ = 00000040		      C FILE_DELETE_CHILD = 40h
+			      C 
+ = 80000000		      C GENERIC_READ     = 80000000h
+ = 40000000		      C GENERIC_WRITE    = 40000000h
+ = 20000000		      C GENERIC_EXECUTE  = 20000000h
+ = 10000000		      C GENERIC_ALL      = 10000000h
+			      C 
+			      C ; Memory allocation constants
+ = 00000001		      C HEAP_NO_SERIALIZE              = 00000001h
+ = 00000002		      C HEAP_GROWABLE                  = 00000002h
+ = 00000004		      C HEAP_GENERATE_EXCEPTIONS       = 00000004h
+ = 00000008		      C HEAP_ZERO_MEMORY               = 00000008h
+ = 00000010		      C HEAP_REALLOC_IN_PLACE_ONLY     = 00000010h
+			      C 
+			      C ; Error Handler Variables
+ = 00000100		      C FORMAT_MESSAGE_ALLOCATE_BUFFER     = 100h
+ = 00001000		      C FORMAT_MESSAGE_FROM_SYSTEM         = 1000h
+			      C 
+			      C ;------------- Message Box Constants ---------------
+			      C 
+			      C ; Icons:
+ = 00000010		      C MB_ICONHAND            = 10h
+ = 00000020		      C MB_ICONQUESTION        = 20h
+ = 00000030		      C MB_ICONEXCLAMATION     = 30h
+ = 00000040		      C MB_ICONASTERISK        = 40h
+ = 00000080		      C MB_USERICON            = 80h
+ = 00000030		      C MB_ICONWARNING         = MB_ICONEXCLAMATION
+ = 00000010		      C MB_ICONERROR           = MB_ICONHAND
+ = 00000040		      C MB_ICONINFORMATION     = MB_ICONASTERISK
+ = 00000010		      C MB_ICONSTOP            = MB_ICONHAND
+			      C 
+			      C ; Buttons:
+ = 00000000		      C MB_OK         = 0
+ = 00000001		      C MB_OKCANCEL   = 1
+ = 00000002		      C MB_ABORTRETRYIGNORE = 2
+ = 00000003		      C MB_YESNOCANCEL = 3
+ = 00000004		      C MB_YESNO       = 4
+ = 00000005		      C MB_RETRYCANCEL = 5
+ = 00000006		      C MB_CANCELTRYCONTINUE = 6
+ = 00004000		      C MB_HELP        =  4000h          ; does not close the window
+			      C 
+			      C ; Select the default button:
+ = 00000000		      C MB_DEFBUTTON1 = 0
+ = 00000100		      C MB_DEFBUTTON2 = 100h
+ = 00000200		      C MB_DEFBUTTON3 = 200h
+ = 00000300		      C MB_DEFBUTTON4 = 300h
+			      C 
+			      C ; Modal control buttons:
+ = 00000000		      C MB_APPLMODAL     =  0
+ = 00001000		      C MB_SYSTEMMODAL   =  1000h	; dialog floats above all windows
+ = 00002000		      C MB_TASKMODAL     =  2000h
+			      C 
+			      C ; Return values:
+ = 00000001		      C IDOK               = 1
+ = 00000002		      C IDCANCEL           = 2
+ = 00000003		      C IDABORT            = 3
+ = 00000004		      C IDRETRY            = 4
+ = 00000005		      C IDIGNORE           = 5
+ = 00000006		      C IDYES              = 6
+ = 00000007		      C IDNO               = 7
+ = 00000008		      C IDCLOSE            = 8
+ = 00000009		      C IDHELP             = 9
+ = 0000000A		      C IDTRYAGAIN         = 10
+ = 0000000B		      C IDCONTINUE         = 11
+ = 00007D00		      C IDTIMEOUT          = 32000
+			      C 
+			      C ;------------------ From winbase.h ----------------------------
+ = 00000001		      C CREATE_NEW         = 1
+ = 00000002		      C CREATE_ALWAYS      = 2
+ = 00000003		      C OPEN_EXISTING      = 3
+ = 00000004		      C OPEN_ALWAYS        = 4
+ = 00000005		      C TRUNCATE_EXISTING  = 5
+			      C 
+ = 00000000		      C FILE_BEGIN         =  0
+ = 00000001		      C FILE_CURRENT       =  1
+ = 00000002		      C FILE_END           =  2
+			      C 
+ =-00000001		      C INVALID_HANDLE_VALUE = -1
+			      C 
+			      C ;--------------------From wincon.h ---------------------------
+			      C 
+			      C ; ControlKeyState flags
+			      C 
+ = 00000001		      C RIGHT_ALT_PRESSED    = 0001h      ; the right alt key is pressed.
+ = 00000002		      C LEFT_ALT_PRESSED     = 0002h      ; the left alt key is pressed.
+ = 00000004		      C RIGHT_CTRL_PRESSED   = 0004h      ; the right ctrl key is pressed.
+ = 00000008		      C LEFT_CTRL_PRESSED    = 0008h      ; the left ctrl key is pressed.
+ = 00000010		      C SHIFT_PRESSED        = 0010h      ; the shift key is pressed.
+ = 00000020		      C NUMLOCK_ON           = 0020h      ; the numlock light is on.
+ = 00000040		      C SCROLLLOCK_ON        = 0040h      ; the scrolllock light is on.
+ = 00000080		      C CAPSLOCK_ON          = 0080h      ; the capslock light is on.
+ = 00000100		      C ENHANCED_KEY         = 0100h      ; the key is enhanced.
+			      C 
+			      C ;---------------------- from WinUser.h -------------------------
+			      C 
+ = 00000090		      C VK_NUMLOCK  =   90h
+ = 00000091		      C VK_SCROLL   =   91h
+ = 000000A0		      C VK_LSHIFT   =   0A0h
+ = 000000A1		      C VK_RSHIFT   =   0A1h
+ = 000000A2		      C VK_LCONTROL =   0A2h
+ = 000000A3		      C VK_RCONTROL =   0A3h
+ = 000000A4		      C VK_LMENU    =   0A4h
+ = 000000A5		      C VK_RMENU    =   0A5h
+			      C 
+			      C ;----------------------------------------------------------------
+			      C 
+ = INVOKE ExitProcess,0	      C exit EQU <INVOKE ExitProcess,0>		; exit program
+			      C 
+			      C ;======================================================
+			      C ;                     ALIASES
+			      C ;======================================================
+			      C ; The following Win32 API functions have an
+			      C ; extra "A" at the end of their name, so they are
+			      C ; redefined here with text macros:
+			      C 
+ = CreateFileA		      C CreateFile 	EQU <CreateFileA>
+ = FormatMessageA	      C FormatMessage   	EQU <FormatMessageA>
+ = GetCommandLineA	      C GetCommandLine	EQU <GetCommandLineA>
+ = MessageBoxA		      C MessageBox      	EQU <MessageBoxA>
+ = PeekConsoleInputA	      C PeekConsoleInput	EQU <PeekConsoleInputA>
+ = ReadConsoleA		      C ReadConsole 	EQU <ReadConsoleA>
+ = ReadConsoleInputA	      C ReadConsoleInput	EQU <ReadConsoleInputA>
+ = SetConsoleTitleA	      C SetConsoleTitle	EQU <SetConsoleTitleA>
+ = WriteConsoleA	      C WriteConsole 	EQU <WriteConsoleA>
+ = WriteConsoleOutputCharac   C WriteConsoleOutputCharacter 	EQU <WriteConsoleOutputCharacterA>
+   terA
+ = wsprintfA		      C wsprintf 		EQU <wsprintfA>
+			      C 
+			      C ;=======================================================
+			      C ; Standard Windows Structure defintions:
+			      C ;=======================================================
+			      C 
+ 00000004		      C COORD STRUCT
+ 00000000  0000		      C 	X WORD ?
+ 00000002  0000		      C 	Y WORD ?
+			      C COORD ENDS
+			      C 
+ 00000010		      C SYSTEMTIME STRUCT
+ 00000000  0000		      C 	wYear WORD ?
+ 00000002  0000		      C 	wMonth WORD ?
+ 00000004  0000		      C 	wDayOfWeek WORD ?
+ 00000006  0000		      C 	wDay WORD ?
+ 00000008  0000		      C 	wHour WORD ?
+ 0000000A  0000		      C 	wMinute WORD ?
+ 0000000C  0000		      C 	wSecond WORD ?
+ 0000000E  0000		      C 	wMilliseconds WORD ?
+			      C SYSTEMTIME ENDS
+			      C 
+			      C ; Date and time, measured in 100ns intervals
+			      C ; since January 1, 1601.
+ 00000008		      C FILETIME STRUCT
+ 00000000  00000000	      C     loDateTime DWORD ?
+ 00000004  00000000	      C     hiDateTime DWORD ?
+			      C FILETIME ENDS
+			      C 
+ 00000008		      C SMALL_RECT STRUCT
+ 00000000  0000		      C   Left     WORD ?
+ 00000002  0000		      C   Top      WORD ?
+ 00000004  0000		      C   Right    WORD ?
+ 00000006  0000		      C   Bottom   WORD ?
+			      C SMALL_RECT ENDS
+			      C 
+ 00000008		      C CONSOLE_CURSOR_INFO STRUCT
+ 00000000  00000000	      C   dwSize   DWORD ?
+ 00000004  00000000	      C   bVisible DWORD ?
+			      C CONSOLE_CURSOR_INFO ENDS
+			      C 
+ 00000016		      C CONSOLE_SCREEN_BUFFER_INFO STRUCT
+ 00000000  0000 0000	      C   dwSize                COORD <>
+ 00000004  0000 0000	      C   dwCursorPosition      COORD <>
+ 00000008  0000		      C   wAttributes           WORD ?
+ 0000000A  0000 0000 0000     C   srWindow              SMALL_RECT <>
+	   0000
+ 00000012  0000 0000	      C   dwMaximumWindowSize   COORD <>
+			      C CONSOLE_SCREEN_BUFFER_INFO ENDS
+			      C 
+ 00000010		      C KEY_EVENT_RECORD STRUCT
+ 00000000  00000000	      C 	bKeyDown          DWORD ?
+ 00000004  0000		      C 	wRepeatCount      WORD  ?
+ 00000006  0000		      C 	wVirtualKeyCode   WORD  ?
+ 00000008  0000		      C 	wVirtualScanCode  WORD  ?
+			      C 	UNION uChar
+ 0000000A  0000		      C 	  UnicodeChar     WORD  ?
+			      C 	  AsciiChar       BYTE  ?
+			      C 	ENDS
+ 0000000C  00000000	      C 	dwControlKeyState DWORD ?
+			      C KEY_EVENT_RECORD ENDS
+			      C 
+ 00000010		      C MOUSE_EVENT_RECORD STRUCT
+ 00000000  0000 0000	      C 	dwMousePosition         COORD <>
+ 00000004  00000000	      C 	dwButtonState           DWORD ?
+ 00000008  00000000	      C 	dwMouseControlKeyState  DWORD ?  
+ 0000000C  00000000	      C 	dwEventFlags            DWORD ?
+			      C MOUSE_EVENT_RECORD ENDS
+			      C 
+ 00000004		      C WINDOW_BUFFER_SIZE_RECORD STRUCT
+ 00000000  0000 0000	      C 	dwSize COORD <>
+			      C WINDOW_BUFFER_SIZE_RECORD ENDS
+			      C 
+ 00000004		      C MENU_EVENT_RECORD STRUCT
+ 00000000  00000000	      C 	dwCommandId DWORD ?		; reserved
+			      C MENU_EVENT_RECORD ENDS
+			      C 
+ 00000004		      C FOCUS_EVENT_RECORD STRUCT
+ 00000000  00000000	      C   bSetFocus DWORD ?
+			      C FOCUS_EVENT_RECORD ENDS
+			      C 
+ 00000014		      C INPUT_RECORD STRUCT
+ 00000000  0000		      C 	EventType WORD ?
+			      C 	ALIGN DWORD	; align next field on doubleword boundary
+			      C 	UNION Event
+ 00000004  00000000 0000      C 		KEY_EVENT_RECORD <>
+	   0000 0000 0000
+	   00000000
+			      C 		MOUSE_EVENT_RECORD <>
+			      C 		WINDOW_BUFFER_SIZE_RECORD <>
+			      C 		MENU_EVENT_RECORD <>
+			      C 		FOCUS_EVENT_RECORD <>
+			      C 	ENDS
+			      C INPUT_RECORD ENDS
+			      C 
+			      C ;==========================================================
+			      C ;                   FUNCTION PROTOTYPES
+			      C ;==========================================================
+			      C 
+			      C CloseHandle PROTO,		; close file handle
+			      C 	hObject:DWORD
+			      C 
+			      C CreateFile PROTO,		; create new file
+			      C 	lpFilename:PTR BYTE,		; ptr to filename
+			      C 	dwDesiredAccess:DWORD,		; access mode
+			      C 	dwShareMode:DWORD,		; share mode
+			      C 	lpSecurityAttributes:DWORD,  		; pointer to security attributes
+			      C 	dwCreationDisposition:DWORD,		; file creation options
+			      C 	dwFlagsAndAttributes:DWORD,		; file attributes
+			      C 	hTemplateFile:DWORD		; handle to template file
+			      C 
+			      C ExitProcess PROTO,                  	; exit program
+			      C 	dwExitCode:DWORD		; return code
+			      C 
+			      C FileTimeToSystemTime PROTO,		; convert FILETIME to SYSTEMTIME
+			      C 	lpFileTime:PTR FILETIME,
+			      C 	lpSystemTime:PTR SYSTEMTIME
+			      C 	
+			      C FileTimeToDosDateTime PROTO,		; converts a Win32 file time to MS-DOS date/time
+			      C 	lpFileTime:PTR FILETIME,
+			      C 	lpFatDate:PTR WORD,
+			      C 	lpFatTime:PTR WORD
+			      C 
+			      C FormatMessage PROTO,		; format a message
+			      C 	dwFlags:DWORD,		; formatting options
+			      C 	lpSource:DWORD,		; location of message definition
+			      C 	dwMsgID:DWORD,		; message identifier
+			      C 	dwLanguageID:DWORD,		; language identifier
+			      C 	lpBuffer:PTR BYTE,		; pointer to buffer receiving string
+			      C 	nSize:DWORD,		; buffer size
+			      C 	va_list:DWORD		; pointer to list of arguments
+			      C 	
+			      C FlushConsoleInputBuffer PROTO,		; flush the input buffer
+			      C 	hConsoleInput:HANDLE		; standard input handle
+			      C 
+			      C GetCommandLine PROTO		; returns pointer to command-line string
+			      C 
+			      C GetConsoleCP PROTO		; returns code page ID in eax
+			      C 
+			      C GetConsoleCursorInfo PROTO,
+			      C 	hConsoleOutput:HANDLE,			; console output handle
+			      C 	lpConsoleCursorInfo:PTR CONSOLE_CURSOR_INFO	; cursor information
+			      C 
+			      C GetConsoleMode PROTO,
+			      C 	hConsoleHandle:HANDLE,		; input or output handle
+			      C 	lpMode:PTR DWORD		; pointer to dword containing flags
+			      C 
+			      C GetConsoleScreenBufferInfo PROTO,
+			      C 	hConsoleOutput:HANDLE,		; handle to screen buffer
+			      C 	lpConsoleScreenBufferInfo:PTR CONSOLE_SCREEN_BUFFER_INFO
+			      C 
+			      C GetFileTime PROTO,		; get date/time stamp of a file
+			      C 	hFile:HANDLE,
+			      C 	pCreationTime:PTR FILETIME,
+			      C 	pLastAccessTime:PTR FILETIME,
+			      C 	pLastWriteTime:PTR FILETIME
+			      C 	
+			      C GetKeyState PROTO,		; get state of keyboard keys (see Ch11\keybd.asm) 
+			      C 	nVirtKey:DWORD
+			      C 
+			      C GetLastError PROTO		; get most recent error return value
+			      C 
+			      C GetLocalTime PROTO,		; system time, adjusted for local time zone
+			      C 	lpSystemTime:PTR SYSTEMTIME		; ptr to SYSTEMTIME object
+			      C 
+			      C GetNumberOfConsoleInputEvents PROTO,	; get number of unread records
+			      C 	hConsoleInput:HANDLE,		; input handle
+			      C 	lpCount:PTR DWORD		; pointer to counter
+			      C 
+			      C GetStdHandle PROTO,               	; get standard handle
+			      C 	nStdHandle:HANDLE  		; type of console handle
+			      C 
+			      C GetSystemTime PROTO,		; returns the system time
+			      C 	lpSystemTime:PTR SYSTEMTIME		; ptr to SYSTEMTIME object
+			      C 
+			      C GetTickCount PROTO		; get elapsed milliseconds
+			      C 				; since computer was turned on
+			      C 
+			      C GetProcessHeap PROTO   		; Get the current process heap handle
+			      C 
+			      C HeapAlloc PROTO,
+			      C 	hHeap:HANDLE,		; handle to private heap block
+			      C 	dwFlags:DWORD,		; heap allocation control flags
+			      C 	dwBytes:DWORD		; number of bytes to allocate
+			      C 
+			      C HeapCreate PROTO,
+			      C 	flOptions:DWORD,		; heap allocation options
+			      C 	dwInitialSize:DWORD,		; initial heap size, in bytes
+			      C 	dwMaximumSize:DWORD		; maximum heap size, in bytes
+			      C 
+			      C HeapDestroy PROTO,
+			      C 	hHeap:HANDLE		; heap handle
+			      C 
+			      C HeapFree PROTO,
+			      C 	hHeap:HANDLE,		; handle to heap with memory block
+			      C 	dwFlags:DWORD,		; heap free options
+			      C 	lpMem:DWORD		; pointer to block to be freed
+			      C 
+			      C HeapSize PROTO,
+			      C 	hHeap:HANDLE,		; handle to heap
+			      C 	dwFlags:DWORD,		; heap size options
+			      C 	pMem:DWORD		; pointer to memory block
+			      C 
+			      C LocalFree PROTO,		; free up local memory, using its handle
+			      C 	hMem:HANDLE
+			      C 	
+			      C MessageBoxA PROTO,		; displays a pop-up message box
+			      C 	hWnd:DWORD,		; handle to window (can be null)
+			      C 	lpText:PTR BYTE,		; string for inside of dialog box
+			      C 	lpCaption:PTR BYTE,		; string for dialog box title
+			      C 	uType:DWORD		; contents and behavior of the dialog
+			      C 
+			      C PeekConsoleInput PROTO,
+			      C 	hConsoleInput:HANDLE,		; input handle
+			      C 	lpBuffer:PTR BYTE,		; pointer to buffer
+			      C 	nLength:DWORD,    		; number of chars to read
+			      C 	lpNumberOfEventsRead:PTR DWORD  	; ptr to number of events read
+			      C 	
+			      C printf PROTO C,		; Std C library function
+			      C 	format:PTR BYTE, args:VARARG		; (in libc.lib)
+			      C 
+			      C ReadConsole PROTO,
+			      C 	hConsoleInput:HANDLE,              ; input handle
+			      C 	lpBuffer:PTR BYTE,                	; pointer to buffer
+			      C 	nNumberOfBytesToRead:DWORD,    	; number of chars to read
+			      C 	lpNumberOfCharsRead:PTR DWORD,  	; ptr to number of bytes read
+			      C 	lpReserved:DWORD               	; (not used)
+			      C 
+			      C ReadConsoleInput PROTO,
+			      C 	hConsoleInput:HANDLE,		; input handle
+			      C 	lpBuffer:PTR INPUT_RECORD,		; ptr to input record
+			      C 	nLength:DWORD,		; request number of recs
+			      C 	lpNumberOfEventsRead:PTR DWORD	; ptr to number of bytes read
+			      C 
+			      C ReadFile PROTO,		; read buffer from input file
+			      C 	hFile:HANDLE,		; input handle
+			      C 	lpBuffer:PTR BYTE,		; ptr to buffer
+			      C 	nNumberOfBytesToRead:DWORD,		; num bytes to read
+			      C 	lpNumberOfBytesRead:PTR DWORD,	; bytes actually read
+			      C 	lpOverlapped:PTR DWORD		; ptr to asynchronous info
+			      C 
+			      C scanf PROTO C,		; Std C library function
+			      C 	format:PTR BYTE, args:VARARG		; (in libc.lib)
+			      C 
+			      C SetConsoleCursorInfo PROTO,
+			      C 	hConsoleOutput:HANDLE,		 ; output handle
+			      C 	lpConsoleCursorInfo:PTR CONSOLE_CURSOR_INFO	; cursor information
+			      C 
+			      C SetConsoleCursorPosition PROTO,
+			      C 	hConsoleOutput:HANDLE,		; output handle
+			      C 	dwCursorPosition:COORD		; screen X,Y coordinates
+			      C 
+			      C SetConsoleMode PROTO,
+			      C 	hConsoleHandle:HANDLE,		; output handle
+			      C 	dwMode:DWORD		; console mode flags
+			      C 
+			      C SetConsoleScreenBufferSize PROTO,
+			      C 	hConsoleOutput:HANDLE,		; handle to screen buffer
+			      C 	dwSize:COORD		; new screen buffer size
+			      C 
+			      C SetConsoleTextAttribute PROTO,
+			      C 	hConsoleOutput:HANDLE,		; output handle
+			      C 	wAttributes:WORD		; color attribute (fixed 6/20/05)
+			      C 
+			      C SetConsoleTitle PROTO,		; set console window title
+			      C 	lpConsoleTitle:PTR BYTE		; points to string
+			      C 
+			      C SetConsoleWindowInfo PROTO,		; set position of console window
+			      C 	hConsoleOutput:HANDLE,		; screen buffer handle
+			      C 	bAbsolute:DWORD,		; coordinate type
+			      C 	lpConsoleWindow:PTR SMALL_RECT	; ptr to window rectangle
+			      C 
+			      C SetFilePointer PROTO,		; set the file pointer position
+			      C 	hFile:HANDLE,		; file handle
+			      C 	lDistanceToMove:SDWORD,		; bytes to move pointer
+			      C 	lpDistanceToMoveHigh:PTR SDWORD,	; ptr to bytes to move, high
+			      C 	dwMoveMethod:DWORD		; starting point
+			      C 
+			      C SetLocalTime PROTO,		; set the system's local date and time
+			      C 	lpSystemTime:PTR SYSTEMTIME		; ptr to SYSTEMTIME structure
+			      C 
+			      C Sleep PROTO,	   	; sleeep for n milliseconds
+			      C 	dwMilliseconds:DWORD
+			      C 
+			      C SystemTimeToFileTime PROTO,		; Convert a SYSTEMTIME structure
+			      C 	lpSystemTime:PTR SYSTEMTIME,		; to a FILETIME structure
+			      C 	lpFileTime:PTR FILETIME
+			      C 
+			      C WriteConsole PROTO,		; write a buffer to the console
+			      C 	hConsoleOutput:HANDLE,		; output handle
+			      C 	lpBuffer:PTR BYTE,		; pointer to buffer
+			      C 	nNumberOfCharsToWrite:DWORD,		; size of buffer
+			      C 	lpNumberOfCharsWritten:PTR DWORD,		; ptr to number of bytes written
+			      C 	lpReserved:DWORD		; (not used)
+			      C 
+			      C WriteConsoleOutputCharacter PROTO,
+			      C 	hConsoleOutput:HANDLE,		; console output handle
+			      C 	lpCharacter:PTR BYTE,		; pointer to buffer
+			      C 	nLength:DWORD,		; size of buffer
+			      C 	dwWriteCoord:COORD,		; first cell coordinates
+			      C 	lpNumberOfCharsWritten:PTR DWORD	; output count
+			      C 
+			      C WriteConsoleOutputAttribute PROTO,
+			      C 	hConsoleOutput:HANDLE,		; output handle
+			      C 	lpAttribute:PTR WORD,		; write attributes
+			      C 	nLength:DWORD,		; number of cells
+			      C 	dwWriteCoord:COORD,		; first cell coordinates
+			      C 	lpNumberOfAttrsWritten:PTR DWORD	; number of cells written
+			      C 
+			      C WriteFile PROTO,		; write buffer to output file
+			      C 	hFile:HANDLE,		; output handle
+			      C 	lpBuffer:PTR BYTE,		; pointer to buffer
+			      C 	nNumberOfBytesToWrite:DWORD,		; size of buffer
+			      C 	lpNumberOfBytesWritten:PTR DWORD,	; num bytes written
+			      C 	lpOverlapped:PTR DWORD		; ptr to asynchronous info
+			      C 
+			      C wsprintf PROTO NEAR C,
+			      C 	lpOut:PTR BYTE,		; output buffer
+			      C 	lpFmt:PTR BYTE,		; format-control string
+			      C 	vars :VARARG		; optional arguments
+			      C 
+			      C .LIST
+			      C 
+			      C INCLUDE VirtualKeys.inc
+			      C ; VirtualKeys.inc
+			      C .NOLIST
+			      C ; updated 4/5/03
+			      C 
+			      C ;  Standard MS-Windows Virtual Key definitions
+			      C 
+ = 00000001		      C VK_LBUTTON      = 01H
+ = 00000002		      C VK_RBUTTON      = 02H
+ = 00000003		      C VK_CANCEL       = 03H
+ = 00000008		      C VK_BACK         = 08H
+ = 00000009		      C VK_TAB          = 09H
+ = 0000000C		      C VK_CLEAR        = 0cH
+ = 0000000D		      C VK_RETURN       = 0dH
+ = 00000010		      C VK_SHIFT        = 10H
+ = 00000011		      C VK_CONTROL      = 11H
+ = 00000012		      C VK_MENU         = 12H
+ = 00000013		      C VK_PAUSE        = 13H
+ = 00000014		      C VK_CAPITAL      = 14H
+ = 0000001B		      C VK_ESCAPE       = 1bH
+ = 00000020		      C VK_SPACE        = 20H
+			      C 
+ = 00000021		      C VK_PRIOR        = 21H
+ = 00000022		      C VK_NEXT         = 22H
+ = 00000023		      C VK_END          = 23H
+ = 00000024		      C VK_HOME         = 24H
+ = 00000025		      C VK_LEFT         = 25H
+ = 00000026		      C VK_UP           = 26H
+ = 00000027		      C VK_RIGHT        = 27H
+ = 00000028		      C VK_DOWN         = 28H
+			      C 
+			      C ;  VK_A thru VK_Z are the same as their ASCII equivalents: 'A' thru 'Z'
+			      C ;  VK_0 thru VK_9 are the same as their ASCII equivalents: '0' thru '0'
+			      C 
+ = 0000002A		      C VK_PRINT        = 2aH
+ = 0000002B		      C VK_EXECUTE      = 2bH
+ = 0000002C		      C VK_SNAPSHOT     = 2ch   ; Printscreen key..
+ = 0000002D		      C VK_INSERT       = 2dH
+ = 0000002E		      C VK_DELETE       = 2eH
+ = 0000002F		      C VK_HELP         = 2fH
+			      C 
+ = 00000060		      C VK_NUMPAD0      = 60H
+ = 00000061		      C VK_NUMPAD1      = 61H
+ = 00000062		      C VK_NUMPAD2      = 62H
+ = 00000063		      C VK_NUMPAD3      = 63H
+ = 00000064		      C VK_NUMPAD4      = 64H
+ = 00000065		      C VK_NUMPAD5      = 65H
+ = 00000066		      C VK_NUMPAD6      = 66H
+ = 00000067		      C VK_NUMPAD7      = 67H
+ = 00000068		      C VK_NUMPAD8      = 68H
+ = 00000069		      C VK_NUMPAD9      = 69H
+ = 0000006A		      C VK_MULTIPLY     = 6AH
+ = 0000006B		      C VK_ADD          = 6BH
+ = 0000006C		      C VK_SEPARATER    = 6CH
+ = 0000006D		      C VK_SUBTRACT     = 6DH
+ = 0000006E		      C VK_DECIMAL      = 6EH
+ = 0000006F		      C VK_DIVIDE       = 6FH
+			      C 
+ = 00000070		      C VK_F1           = 70H
+ = 00000071		      C VK_F2           = 71H
+ = 00000072		      C VK_F3           = 72H
+ = 00000073		      C VK_F4           = 73H
+ = 00000074		      C VK_F5           = 74H
+ = 00000075		      C VK_F6           = 75H
+ = 00000076		      C VK_F7           = 76H
+ = 00000077		      C VK_F8           = 77H
+ = 00000078		      C VK_F9           = 78H
+ = 00000079		      C VK_F10          = 79H
+ = 0000007A		      C VK_F11          = 7aH
+ = 0000007B		      C VK_F12          = 7bH
+ = 0000007C		      C VK_F13          = 7cH
+ = 0000007D		      C VK_F14          = 7dH
+ = 0000007E		      C VK_F15          = 7eH
+ = 0000007F		      C VK_F16          = 7fH
+ = 00000080		      C VK_F17          = 80H
+ = 00000081		      C VK_F18          = 81H
+ = 00000082		      C VK_F19          = 82H
+ = 00000083		      C VK_F20          = 83H
+ = 00000084		      C VK_F21          = 84H
+ = 00000085		      C VK_F22          = 85H
+ = 00000086		      C VK_F23          = 86H
+ = 00000087		      C VK_F24          = 87H
+			      C 
+			      C 
+ = 00000090		      C VK_NUMLOCK      = 90H
+ = 00000091		      C VK_SCROLL       = 91H
+			      C 
+			      C ; Not found in Windows header file:
+			      C 
+ = 000000BD		      C VK_11 = 0BDh 	; - key (on horizontal numbers row)
+ = 000000BB		      C VK_12 = 0BBh 	; + key (on horizontal numbers row)
+			      C .LIST
+			      C 
+			      C 
+			      C .NOLIST
+			      C ; Last update: 7/29/05
+			      C 
+			      C ;----------------------------------------
+			      C ; Procedure Prototypes
+			      C ;----------------------------------------
+			      C CloseFile PROTO		; close a file handle
+			      C Clrscr PROTO		; clear the screen
+			      C CreateOutputFile PROTO		; create file for writing
+			      C Crlf PROTO		; output carriage-return / linefeed
+			      C Delay PROTO		; delay for n milliseconds
+			      C DumpMem PROTO		; display memory dump
+			      C DumpRegs PROTO		; display register dump
+			      C GetCommandTail PROTO		; get command-line string
+			      C GetDateTime PROTO,		; get system date and time
+			      C   startTime:PTR QWORD
+			      C GetMaxXY PROTO		; get console rows and columns
+			      C GetMseconds PROTO		; get milliseconds past midnight
+			      C GetTextColor PROTO		; Get the console window's color attributes. 
+			      C Gotoxy PROTO		; set the cursor position
+			      C IsDigit PROTO		; return ZF=1 if AL is a decimal digit
+			      C MsgBox PROTO		; display popup message box
+			      C MsgBoxAsk PROTO		; display popup yes/no question box
+			      C OpenInputFile PROTO		; open file in input mode
+			      C ParseDecimal32 PROTO		; convert unsigned decimal string to 32-bit binary
+			      C ParseInteger32 PROTO		; convert signed decimal string to 32-bit binary
+			      C Randomize PROTO		; reseed random number generator
+			      C RandomRange PROTO		; generate random integer in specified range
+			      C Random32 PROTO		; generate 32-bit random integer
+			      C ReadInt PROTO		; read signed decimal integer from console
+			      C ReadChar PROTO		; reach single character from console
+			      C ReadDec PROTO		; read unsigned decimal integer from console
+			      C ReadFloat PROTO		; read floating-point value from keyboard
+			      C ReadFromFile PROTO   		; read buffer from input file
+			      C ReadHex PROTO		; read hexadecimal integer from console
+			      C ReadKey PROTO		; Reads keyboard input if available (4/6/03)
+			      C ReadKeyFlush PROTO		; Flush ReadKey buffer and repeat counter (4/6/03)
+			      C ReadString PROTO		; read string from console
+			      C SetTextColor PROTO		; set console text color
+			      C ShowFPUStack PROTO		; write floating-point stack to console window
+			      C StrLength PROTO		; returns the length of a string
+			      C WaitMsg PROTO		; display wait message, wait for Enter key
+			      C WriteBin PROTO		; write integer to output in binary format
+			      C WriteBinB PROTO		; write binary integer in byte, word,or doubleword format
+			      C WriteChar PROTO		; write single character to output
+			      C WriteDec PROTO		; write unsigned decimal integer to output
+			      C WriteFloat PROTO		; write ST(0) to console in floating-point format
+			      C WriteHex PROTO		; write hexadecimal integer to output
+			      C WriteHexB PROTO		; write hexadecimal integer in word or doubleword format
+			      C WriteInt PROTO		; write signed integer to output
+			      C ;WriteStackFrame		; write stack frame data (James Brink--see proto later in this file)
+			      C ;WriteStackFrameName		; write stack frame data with proc name (James Brink)
+			      C WriteString PROTO		; write null-terminated string to output
+			      C WriteToFile PROTO		; write a buffer to an output file
+			      C WriteWindowsMsg PROTO		; write last error message generated by MS-Windows
+			      C 
+			      C 
+			      C ; Copy a source string to a target string.
+			      C Str_copy PROTO,
+			      C  	source:PTR BYTE,
+			      C  	target:PTR BYTE
+			      C 
+			      C ; Return the length of a null-terminated string..
+			      C Str_length PROTO,
+			      C 	pString:PTR BYTE
+			      C 
+			      C ; Compare string1 to string2. Set the Zero and
+			      C ; Carry flags in the same way as the CMP instruction.
+			      C Str_compare PROTO,
+			      C 	string1:PTR BYTE,
+			      C 	string2:PTR BYTE
+			      C 
+			      C ; Trim a given trailing character from a string.
+			      C ; The second argument is the character to trim.
+			      C Str_trim PROTO,
+			      C 	pString:PTR BYTE,
+			      C 	char:BYTE
+			      C 
+			      C ; Convert a null-terminated string to upper case.
+			      C Str_ucase PROTO,
+			      C 	pString:PTR BYTE
+			      C 
+			      C ;******** Procedures by James Brink ********************************
+			      C ; Used by permission.
+			      C 
+			      C WriteStackFrameName PROTO,
+			      C            numParam:DWORD,     ; number of parameters passed to the procedure
+			      C            numLocalVal: DWORD, ; number of DWordLocal variables
+			      C            numSavedReg: DWORD, ; number of saved registers
+			      C            procName: PTR BYTE
+			      C 
+			      C WriteStackFrame PROTO,
+			      C            numParam:DWORD,     ; number of parameters passed to the procedure
+			      C            numLocalVal: DWORD, ; number of DWordLocal variables
+			      C            numSavedReg: DWORD  ; number of saved registers
+			      C 
+			      C 
+			      C ;-----------------------------------
+			      C ; Standard 4-bit color definitions
+			      C ;-----------------------------------
+ = 00000000		      C black        = 0000b
+ = 00000001		      C blue         = 0001b
+ = 00000002		      C green        = 0010b
+ = 00000003		      C cyan         = 0011b
+ = 00000004		      C red          = 0100b
+ = 00000005		      C magenta      = 0101b
+ = 00000006		      C brown        = 0110b
+ = 00000007		      C lightGray    = 0111b
+ = 00000008		      C gray         = 1000b
+ = 00000009		      C lightBlue    = 1001b
+ = 0000000A		      C lightGreen   = 1010b
+ = 0000000B		      C lightCyan    = 1011b
+ = 0000000C		      C lightRed     = 1100b
+ = 0000000D		      C lightMagenta = 1101b
+ = 0000000E		      C yellow       = 1110b
+ = 0000000F		      C white        = 1111b
+			      C 
+			      C ; This structure is returned by the FSTSW
+			      C ; instruction in protected mode:
+			      C 
+ 0000001C		      C FPU_ENVIRON STRUCT
+ 00000000  0000		      C 	controlWord    WORD ?
+			      C 	ALIGN DWORD
+ 00000004  0000		      C 	statusWord     WORD ?
+			      C 	ALIGN DWORD
+ 00000008  0000		      C 	tagWord        WORD ?
+			      C 	ALIGN DWORD
+ 0000000C  00000000	      C 	instrPointerOffset     DWORD ?
+ 00000010  00000000	      C 	instrPointerSelector   DWORD ?
+ 00000014  00000000	      C 	operandPointerOffset   DWORD ?
+ 00000018  0000		      C 	operandPointerSelector WORD ?
+ 0000001A  0000		      C 	WORD ?	; not used
+			      C FPU_ENVIRON ENDS
+			      C 
+			      C .LIST
+			      C 
+				INCLUDELIB C:\Irvine\Irvine32.lib
+				INCLUDELIB C:\Irvine\Kernel32.lib
+				INCLUDELIB C:\Irvine\User32.lib
+
+
+ 00000000			.data
+
+				; =========================================================
+				; CONSTANTS
+				; =========================================================
+
+ = 00000000			CMD_UNKNOWN  EQU 0
+ = 00000001			CMD_KEYGEN   EQU 1
+ = 00000002			CMD_ENCRYPT  EQU 2
+ = 00000003			CMD_DECRYPT  EQU 3
+ = 00000004			CMD_DUMP     EQU 4
+ = 00000005			CMD_STATS    EQU 5
+ = 00000006			CMD_CLEAR    EQU 6
+ = 00000007			CMD_EXIT     EQU 7
+
+
+				; =========================================================
+				; STRINGS
+				; =========================================================
+
+ 00000000 44 45 53 2D 53	prompt          BYTE "DES-SHELL> ", 0
+	   48 45 4C 4C 3E
+	   20 00
+
+ 0000000C 5B 4B 45 59 47	msgKeygen       BYTE "[KEYGEN command detected]", 0Dh, 0Ah, 0
+	   45 4E 20 63 6F
+	   6D 6D 61 6E 64
+	   20 64 65 74 65
+	   63 74 65 64 5D
+	   0D 0A 00
+ 00000028 5B 45 4E 43 52	msgEncrypt      BYTE "[ENCRYPT command detected]", 0Dh, 0Ah, 0
+	   59 50 54 20 63
+	   6F 6D 6D 61 6E
+	   64 20 64 65 74
+	   65 63 74 65 64
+	   5D 0D 0A 00
+ 00000045 5B 44 45 43 52	msgDecrypt      BYTE "[DECRYPT command detected]", 0Dh, 0Ah, 0
+	   59 50 54 20 63
+	   6F 6D 6D 61 6E
+	   64 20 64 65 74
+	   65 63 74 65 64
+	   5D 0D 0A 00
+ 00000062 5B 44 55 4D 50	msgDump         BYTE "[DUMP command detected]", 0Dh, 0Ah, 0
+	   20 63 6F 6D 6D
+	   61 6E 64 20 64
+	   65 74 65 63 74
+	   65 64 5D 0D 0A
+	   00
+ 0000007C 5B 53 54 41 54	msgStats        BYTE "[STATS command detected]", 0Dh, 0Ah, 0
+	   53 20 63 6F 6D
+	   6D 61 6E 64 20
+	   64 65 74 65 63
+	   74 65 64 5D 0D
+	   0A 00
+ 00000097 5B 43 4C 45 41	msgClear        BYTE "[CLEAR command detected]", 0Dh, 0Ah, 0
+	   52 20 63 6F 6D
+	   6D 61 6E 64 20
+	   64 65 74 65 63
+	   74 65 64 5D 0D
+	   0A 00
+
+ 000000B2 45 52 52 4F 52	msgUnknown      BYTE "ERROR: Unknown command", 0Dh, 0Ah, 0
+	   3A 20 55 6E 6B
+	   6E 6F 77 6E 20
+	   63 6F 6D 6D 61
+	   6E 64 0D 0A 00
+ 000000CB 45 78 69 74 69	msgExit         BYTE "Exiting DES Command-Line Shell...", 0Dh, 0Ah, 0
+	   6E 67 20 44 45
+	   53 20 43 6F 6D
+	   6D 61 6E 64 2D
+	   4C 69 6E 65 20
+	   53 68 65 6C 6C
+	   2E 2E 2E 0D 0A
+	   00
+
+
+				; =========================================================
+				; INPUT BUFFER
+				; =========================================================
+
+ 000000EF  00000100 [		inputBuffer     BYTE 256 DUP(0)
+	    00
+	   ]
+
+
+ 00000000			.code
+
+
+				; =========================================================
+				; MAIN
+				; =========================================================
+
+ 00000000			main PROC
+
+ 00000000  55			    push ebp
+ 00000001  8B EC		    mov  ebp, esp
+
+ 00000003			MainLoop:
+
+				    ; -----------------------------------------------------
+				    ; แสดง prompt
+				    ; -----------------------------------------------------
+
+ 00000003  BA 00000000 R	    mov  edx, OFFSET prompt
+ 00000008  E8 00000000 E	    call WriteString
+
+
+				    ; -----------------------------------------------------
+				    ; รับ command จาก user
+				    ; -----------------------------------------------------
+
+ 0000000D  BA 000000EF R	    mov  edx, OFFSET inputBuffer
+ 00000012  B9 000000FF		    mov  ecx, SIZEOF inputBuffer - 1
+ 00000017  E8 00000000 E	    call ReadString
+
+
+				    ; -----------------------------------------------------
+				    ; Parse command
+				    ;
+				    ; EAX = command ID
+				    ; -----------------------------------------------------
+
+ 0000001C  68 000000EF R	    push OFFSET inputBuffer
+ 00000021  E8 00000094		    call ParseCommand
+
+
+				    ; -----------------------------------------------------
+				    ; ตรวจว่า command คืออะไร
+				    ; -----------------------------------------------------
+
+ 00000026  83 F8 01		    cmp  eax, CMD_KEYGEN
+ 00000029  74 2A		    je   HandleKeygen
+
+ 0000002B  83 F8 02		    cmp  eax, CMD_ENCRYPT
+ 0000002E  74 31		    je   HandleEncrypt
+
+ 00000030  83 F8 03		    cmp  eax, CMD_DECRYPT
+ 00000033  74 38		    je   HandleDecrypt
+
+ 00000035  83 F8 04		    cmp  eax, CMD_DUMP
+ 00000038  74 3F		    je   HandleDump
+
+ 0000003A  83 F8 05		    cmp  eax, CMD_STATS
+ 0000003D  74 49		    je   HandleStats
+
+ 0000003F  83 F8 06		    cmp  eax, CMD_CLEAR
+ 00000042  74 53		    je   HandleClear
+
+ 00000044  83 F8 07		    cmp  eax, CMD_EXIT
+ 00000047  74 5D		    je   HandleExit
+
+
+				    ; -----------------------------------------------------
+				    ; ไม่รู้จัก command
+				    ; -----------------------------------------------------
+
+ 00000049  BA 000000B2 R	    mov  edx, OFFSET msgUnknown
+ 0000004E  E8 00000000 E	    call WriteString
+
+ 00000053  EB AE		    jmp  MainLoop
+
+
+				; =========================================================
+				; COMMAND HANDLERS
+				; =========================================================
+
+ 00000055			HandleKeygen:
+
+ 00000055  BA 0000000C R	    mov  edx, OFFSET msgKeygen
+ 0000005A  E8 00000000 E	    call WriteString
+
+ 0000005F  EB A2		    jmp  MainLoop
+
+
+ 00000061			HandleEncrypt:
+
+ 00000061  BA 00000028 R	    mov  edx, OFFSET msgEncrypt
+ 00000066  E8 00000000 E	    call WriteString
+
+ 0000006B  EB 96		    jmp  MainLoop
+
+
+ 0000006D			HandleDecrypt:
+
+ 0000006D  BA 00000045 R	    mov  edx, OFFSET msgDecrypt
+ 00000072  E8 00000000 E	    call WriteString
+
+ 00000077  EB 8A		    jmp  MainLoop
+
+
+ 00000079			HandleDump:
+
+ 00000079  BA 00000062 R	    mov  edx, OFFSET msgDump
+ 0000007E  E8 00000000 E	    call WriteString
+
+ 00000083  E9 FFFFFF7B		    jmp  MainLoop
+
+
+ 00000088			HandleStats:
+
+ 00000088  BA 0000007C R	    mov  edx, OFFSET msgStats
+ 0000008D  E8 00000000 E	    call WriteString
+
+ 00000092  E9 FFFFFF6C		    jmp  MainLoop
+
+
+ 00000097			HandleClear:
+
+ 00000097  BA 00000097 R	    mov  edx, OFFSET msgClear
+ 0000009C  E8 00000000 E	    call WriteString
+
+				    ; ตอนนี้ยังไม่ต้องทำ clear จริง
+				    ; เอาไว้ทำในขั้นต่อไป
+
+ 000000A1  E9 FFFFFF5D		    jmp  MainLoop
+
+
+ 000000A6			HandleExit:
+
+ 000000A6  BA 000000CB R	    mov  edx, OFFSET msgExit
+ 000000AB  E8 00000000 E	    call WriteString
+
+ 000000B0  8B E5		    mov  esp, ebp
+ 000000B2  5D			    pop  ebp
+
+				    exit
+ 000000B3  6A 00	   *	    push   +000000000h
+ 000000B5  E8 00000000 E   *	    call   ExitProcess
+
+ 000000BA			main ENDP
+
+
+
+; =========================================================
+				; ParseCommand
+				;
+				; Input:
+				;   [ebp + 8] = pointer ไปยัง input string
+				;
+				; Return:
+				;   EAX = command ID
+				;
+				; CMD_UNKNOWN = 0
+				; CMD_KEYGEN  = 1
+				; CMD_ENCRYPT = 2
+				; CMD_DECRYPT = 3
+				; CMD_DUMP    = 4
+				; CMD_STATS   = 5
+				; CMD_CLEAR   = 6
+				; CMD_EXIT    = 7
+				;
+				; =========================================================
+
+ 000000BA			ParseCommand PROC
+
+ 000000BA  55			    push ebp
+ 000000BB  8B EC		    mov  ebp, esp
+
+ 000000BD  53			    push ebx
+ 000000BE  51			    push ecx
+ 000000BF  52			    push edx
+ 000000C0  56			    push esi
+ 000000C1  57			    push edi
+
+
+ 000000C2  8B 75 08		    mov  esi, [ebp + 8]
+
+
+				; =========================================================
+				; Check KEYGEN
+				; =========================================================
+
+ 000000C5  BF 0000019C R	    mov  edi, OFFSET cmdKEYGEN
+ 000000CA  E8 000000A0		    call StringEqual
+
+ 000000CF  83 F8 01		    cmp  eax, 1
+ 000000D2  74 61		    je   FoundKEYGEN
+
+
+				; =========================================================
+				; Check ENCRYPT
+				; =========================================================
+
+ 000000D4  BF 000001A3 R	    mov  edi, OFFSET cmdENCRYPT
+ 000000D9  E8 00000091		    call StringEqual
+
+ 000000DE  83 F8 01		    cmp  eax, 1
+ 000000E1  74 59		    je   FoundENCRYPT
+
+
+				; =========================================================
+				; Check DECRYPT
+				; =========================================================
+
+ 000000E3  BF 000001AB R	    mov  edi, OFFSET cmdDECRYPT
+ 000000E8  E8 00000082		    call StringEqual
+
+ 000000ED  83 F8 01		    cmp  eax, 1
+ 000000F0  74 51		    je   FoundDECRYPT
+
+
+				; =========================================================
+				; Check DUMP
+				; =========================================================
+
+ 000000F2  BF 000001B3 R	    mov  edi, OFFSET cmdDUMP
+ 000000F7  E8 00000073		    call StringEqual
+
+ 000000FC  83 F8 01		    cmp  eax, 1
+ 000000FF  74 49		    je   FoundDUMP
+
+
+				; =========================================================
+				; Check STATS
+				; =========================================================
+
+ 00000101  BF 000001B8 R	    mov  edi, OFFSET cmdSTATS
+ 00000106  E8 00000064		    call StringEqual
+
+ 0000010B  83 F8 01		    cmp  eax, 1
+ 0000010E  74 41		    je   FoundSTATS
+
+
+				; =========================================================
+				; Check CLEAR
+				; =========================================================
+
+ 00000110  BF 000001BE R	    mov  edi, OFFSET cmdCLEAR
+ 00000115  E8 00000055		    call StringEqual
+
+ 0000011A  83 F8 01		    cmp  eax, 1
+ 0000011D  74 39		    je   FoundCLEAR
+
+
+				; =========================================================
+				; Check EXIT
+				; =========================================================
+
+ 0000011F  BF 000001C4 R	    mov  edi, OFFSET cmdEXIT
+ 00000124  E8 00000046		    call StringEqual
+
+ 00000129  83 F8 01		    cmp  eax, 1
+ 0000012C  74 31		    je   FoundEXIT
+
+
+				; =========================================================
+				; Unknown
+				; =========================================================
+
+ 0000012E  B8 00000000		    mov  eax, CMD_UNKNOWN
+ 00000133  EB 2F		    jmp  ParseDone
+
+
+ 00000135			FoundKEYGEN:
+
+ 00000135  B8 00000001		    mov  eax, CMD_KEYGEN
+ 0000013A  EB 28		    jmp  ParseDone
+
+
+ 0000013C			FoundENCRYPT:
+
+ 0000013C  B8 00000002		    mov  eax, CMD_ENCRYPT
+ 00000141  EB 21		    jmp  ParseDone
+
+
+ 00000143			FoundDECRYPT:
+
+ 00000143  B8 00000003		    mov  eax, CMD_DECRYPT
+ 00000148  EB 1A		    jmp  ParseDone
+
+
+ 0000014A			FoundDUMP:
+
+ 0000014A  B8 00000004		    mov  eax, CMD_DUMP
+ 0000014F  EB 13		    jmp  ParseDone
+
+
+ 00000151			FoundSTATS:
+
+ 00000151  B8 00000005		    mov  eax, CMD_STATS
+ 00000156  EB 0C		    jmp  ParseDone
+
+
+ 00000158			FoundCLEAR:
+
+ 00000158  B8 00000006		    mov  eax, CMD_CLEAR
+ 0000015D  EB 05		    jmp  ParseDone
+
+
+ 0000015F			FoundEXIT:
+
+ 0000015F  B8 00000007		    mov  eax, CMD_EXIT
+
+
+ 00000164			ParseDone:
+				    
+ 00000164  5F			    pop edi
+ 00000165  5E			    pop  esi
+ 00000166  5A			    pop  edx
+ 00000167  59			    pop  ecx
+ 00000168  5B			    pop  ebx
+
+ 00000169  8B E5		    mov  esp, ebp
+ 0000016B  5D			    pop  ebp
+
+ 0000016C  C2 0004		    ret 4
+
+ 0000016F			ParseCommand ENDP
+
+
+
+				; =========================================================
+				; StringEqual
+				;
+				; เปรียบเทียบ string
+				;
+				; Input:
+				;   ESI = string จาก user
+				;   EDI = string ที่ต้องการเปรียบเทียบ
+				;
+				; Return:
+				;   EAX = 1 ถ้าเหมือน
+				;   EAX = 0 ถ้าไม่เหมือน
+				;
+				; =========================================================
+
+ 0000016F			StringEqual PROC
+
+ 0000016F  55			    push ebp
+ 00000170  8B EC		    mov  ebp, esp
+
+ 00000172  53			    push ebx
+ 00000173  51			    push ecx
+ 00000174  52			    push edx
+ 00000175  56			    push esi
+ 00000176  57			    push edi
+
+
+ 00000177			CompareLoop:
+
+ 00000177  8A 06		    mov  al, BYTE PTR [esi]
+ 00000179  8A 1F		    mov  bl, BYTE PTR [edi]
+
+
+				    ; -----------------------------------------------------
+				    ; ตัวอักษรไม่เหมือนกัน
+				    ; -----------------------------------------------------
+
+ 0000017B  3A C3		    cmp  al, bl
+ 0000017D  75 0F		    jne  StringsNotEqual
+
+
+				    ; -----------------------------------------------------
+				    ; ถ้าเจอ NULL ทั้งคู่ แปลว่าเหมือนกัน
+				    ; -----------------------------------------------------
+
+ 0000017F  3C 00		    cmp  al, 0
+ 00000181  74 04		    je   StringsEqual
+
+
+ 00000183  46			    inc  esi
+ 00000184  47			    inc  edi
+
+ 00000185  EB F0		    jmp  CompareLoop
+
+
+ 00000187			StringsEqual:
+
+ 00000187  B8 00000001		    mov  eax, 1
+ 0000018C  EB 05		    jmp  StringCompareDone
+
+
+ 0000018E			StringsNotEqual:
+
+ 0000018E  B8 00000000		    mov  eax, 0
+
+
+ 00000193			StringCompareDone:
+ 00000193  5F			    pop  edi
+ 00000194  5E			    pop  esi
+ 00000195  5A			    pop  edx
+ 00000196  59			    pop  ecx
+ 00000197  5B			    pop  ebx
+
+ 00000198  8B E5		    mov  esp, ebp
+ 0000019A  5D			    pop  ebp
+
+ 0000019B  C3			    ret
+
+ 0000019C			StringEqual ENDP
+
+
+
+				; =========================================================
+				; COMMAND STRINGS
+				; =========================================================
+
+ 0000019C 4B 45 59 47 45	cmdKEYGEN   BYTE "KEYGEN", 0
+	   4E 00
+ 000001A3 45 4E 43 52 59	cmdENCRYPT  BYTE "ENCRYPT", 0
+	   50 54 00
+ 000001AB 44 45 43 52 59	cmdDECRYPT  BYTE "DECRYPT", 0
+	   50 54 00
+ 000001B3 44 55 4D 50 00	cmdDUMP     BYTE "DUMP", 0
+ 000001B8 53 54 41 54 53	cmdSTATS    BYTE "STATS", 0
+	   00
+ 000001BE 43 4C 45 41 52	cmdCLEAR    BYTE "CLEAR", 0
+	   00
+ 000001C4 45 58 49 54 00	cmdEXIT     BYTE "EXIT", 0
+
+
+				END main
