@@ -1,801 +1,301 @@
-TITLE Module B - DES Key Schedule Generator
+TITLE DES Module B - Key Schedule Generation
 
 .386
 .model flat, stdcall
-PUBLIC GenerateKeySchedule
-
-INCLUDE ModuleB.inc
+.stack 4096
 
 .data
-; ------------------------------------------------------------
-; DES Permuted Choice 1
-; ------------------------------------------------------------
-PC1 BYTE 57,49,41,33,25,17, 9, 1
-    BYTE 58,50,42,34,26,18,10, 2
-    BYTE 59,51,43,35,27,19,11, 3
-    BYTE 60,52,44,36,63,55,47,39
-    BYTE 31,23,15, 7,62,54,46,38
-    BYTE 30,22,14, 6,61,53,45,37
-    BYTE 29,21,13, 5,28,20,12, 4
 
-ShiftSchedule BYTE 1,1,2,2,2,2,2,2,1,2,2,2,2,2,2,1
+; PC-1 Table (56 entries: 1..64)
+PC1 BYTE 57, 49, 41, 33, 25, 17,  9
+    BYTE  1, 58, 50, 42, 34, 26, 18
+    BYTE 10,  2, 59, 51, 43, 35, 27
+    BYTE 19, 11,  3, 60, 52, 44, 36
+    BYTE 63, 55, 47, 39, 31, 23, 15
+    BYTE  7, 62, 54, 46, 38, 30, 22
+    BYTE 14,  6, 61, 53, 45, 37, 29
+    BYTE 21, 13,  5, 28, 20, 12,  4
 
-PC2 BYTE 14,17,11,24, 1, 5
-    BYTE  3,28,15, 6,21,10
-    BYTE 23,19,12, 4,26, 8
-    BYTE 16, 7,27,20,13, 2
-    BYTE 41,52,31,37,47,55
-    BYTE 30,40,51,45,33,48
-    BYTE 44,49,39,56,34,53
-    BYTE 46,42,50,36,29,32
+; Shift Schedule (16 rounds)
+ShiftSchedule BYTE 1, 1, 2, 2, 2, 2, 2, 2, 1, 2, 2, 2, 2, 2, 2, 1
 
-C_Val DWORD ?
-D_Val DWORD ?
+; PC-2 Table (48 entries: 1..56)
+PC2 BYTE 14, 17, 11, 24,  1,  5
+    BYTE  3, 28, 15,  6, 21, 10
+    BYTE 23, 19, 12,  4, 26,  8
+    BYTE 16,  7, 27, 20, 13,  2
+    BYTE 41, 52, 31, 37, 47, 55
+    BYTE 30, 40, 51, 45, 33, 48
+    BYTE 44, 49, 39, 56, 34, 53
+    BYTE 46, 42, 50, 36, 29, 32
+
+C_Val DWORD 0
+D_Val DWORD 0
+
 
 .code
-; ============================================================
-; GenerateKeySchedule
-;
-; PUBLIC API
-;
-; Parameters:
-;
-;   [ebp+8]  = pointer to 8-byte DES key
-;   [ebp+12] = pointer to 96-byte output buffer
-;
-; Output:
-;
-;   SubKeys:
-;
-;       +0   = K1
-;       +6   = K2
-;       +12  = K3
-;       ...
-;       +90  = K16
-;
-; Return:
-;
-;   EAX = 1 -> success
-;   EAX = 0 -> failure
-;
-; Calling convention:
-;
-;   stdcall
-;
-; ============================================================
 
-GenerateKeySchedule PROC
-
-    push ebp
-    mov  ebp, esp
-
+; =========================================================
+; GetBit64 - อ่านบิตที่ bitPos (1..64) จาก pKey (MSB First)
+; =========================================================
+GetBit64 PROC pKey:PTR BYTE, bitPos:DWORD
     push ebx
     push ecx
     push edx
     push esi
-    push edi
 
-    mov esi, [ebp + 8]       ; pKey64
-    mov edi, [ebp + 12]      ; pSubKeys
+    mov  esi, pKey
+    mov  eax, bitPos
+    dec  eax                   ; bitPos 1..64 -> 0..63
 
-    ; --------------------------------------------------------
-    ; Basic pointer validation
-    ; --------------------------------------------------------
+    mov  ebx, eax
+    shr  ebx, 3                ; byteIndex = bitPos / 8
+    and  eax, 7                ; bitIndex = bitPos % 8
 
-    test esi, esi
-    jz KeyScheduleFail
+    movzx edx, BYTE PTR [esi + ebx]
+    mov  ecx, 7
+    sub  ecx, eax              ; Shift = 7 - bitIndex (MSB First)
+    shr  edx, cl
+    and  edx, 1
+    mov  eax, edx
 
-    test edi, edi
-    jz KeyScheduleFail
-
-
-    ; --------------------------------------------------------
-    ; Step 1:
-    ;
-    ; PC-1
-    ;
-    ; 64-bit Key
-    ;      ↓
-    ;    PC-1
-    ;      ↓
-    ;  C0 + D0
-    ; --------------------------------------------------------
-
-    push esi
-    call GenerateC0D0
+    pop  esi
+    pop  edx
+    pop  ecx
+    pop  ebx
+    ret
+GetBit64 ENDP
 
 
-    ; --------------------------------------------------------
-    ; Step 2:
-    ;
-    ; Generate K1-K16
-    ; --------------------------------------------------------
-
-    xor ebx, ebx             ; EBX = round index 0..15
-
-
-KeyScheduleLoop:
-
-    ; --------------------------------------------------------
-    ; Check round
-    ; --------------------------------------------------------
-
-    cmp ebx, 16
-    jge KeyScheduleDone
-
-
-    ; --------------------------------------------------------
-    ; Get shift amount
-    ;
-    ; ShiftSchedule[0..15]
-    ; --------------------------------------------------------
-
-    movzx ecx, BYTE PTR ShiftSchedule[ebx]
-
-
-    ; --------------------------------------------------------
-    ; Rotate C
-    ; --------------------------------------------------------
-
-    mov eax, C_Val
-
-    push ecx
-    push eax
-    call Rotate28
-
-    mov C_Val, eax
-
-
-    ; --------------------------------------------------------
-    ; Rotate D
-    ; --------------------------------------------------------
-
-    mov eax, D_Val
-
-    push ecx
-    push eax
-    call Rotate28
-
-    mov D_Val, eax
-
-
-    ; --------------------------------------------------------
-    ; Calculate destination:
-    ;
-    ; round * 6
-    ;
-    ; K1  -> +0
-    ; K2  -> +6
-    ; K3  -> +12
-    ; ...
-    ; K16 -> +90
-    ; --------------------------------------------------------
-
-    mov eax, ebx
-    imul eax, 6
-
-    lea edx, [edi + eax]
-
-
-    ; --------------------------------------------------------
-    ; PC-2
-    ;
-    ; Cn + Dn
-    ;    ↓
-    ;   PC-2
-    ;    ↓
-    ;  48-bit Kn
-    ; --------------------------------------------------------
-
-    push edx
-    call GenerateSubKeyPC2
-
-
-    ; --------------------------------------------------------
-    ; Next round
-    ; --------------------------------------------------------
-
-    inc ebx
-    jmp KeyScheduleLoop
-
-
-; ============================================================
-; SUCCESS
-; ============================================================
-
-KeyScheduleDone:
-
-    mov eax, 1
-    jmp KeyScheduleExit
-
-
-; ============================================================
-; FAILURE
-; ============================================================
-
-KeyScheduleFail:
-
-    xor eax, eax
-
-
-; ============================================================
-; EXIT
-; ============================================================
-
-KeyScheduleExit:
-
-    pop edi
-    pop esi
-    pop edx
-    pop ecx
-    pop ebx
-
-    mov esp, ebp
-    pop ebp
-
-    ret 8
-
-GenerateKeySchedule ENDP
-
-
-
-; ============================================================
-; GenerateC0D0
-;
-; Performs DES PC-1.
-;
-; Parameters:
-;
-;   [ebp+8] = pointer to 8-byte DES key
-;
-; Result:
-;
-;   C_Val = 28-bit C0
-;   D_Val = 28-bit D0
-;
-; ============================================================
-
-GenerateC0D0 PROC
-
-    push ebp
-    mov  ebp, esp
-
+; =========================================================
+; GenerateC0D0 - คำนวณ C0 และ D0 จาก PC1
+; =========================================================
+GenerateC0D0 PROC pKey:PTR BYTE
     push ebx
     push ecx
     push edx
     push esi
-    push edi
 
-    ; --------------------------------------------------------
-    ; Input key pointer
-    ; --------------------------------------------------------
-
-    mov esi, [ebp + 8]
-
-
-    ; --------------------------------------------------------
-    ; Clear accumulators
-    ;
-    ; EDI = C0
-    ; EBX = D0
-    ; EDX = PC1 index
-    ; --------------------------------------------------------
-
-    xor edi, edi
-    xor ebx, ebx
-    xor edx, edx
-
+    mov  C_Val, 0
+    mov  D_Val, 0
+    xor  edx, edx              ; index 0..55
 
 PC1_Loop:
-
-    cmp edx, 56
-    jge PC1_Done
-
-
-    ; --------------------------------------------------------
-    ; Get PC1 bit position
-    ; --------------------------------------------------------
+    cmp  edx, 56
+    jge  PC1_Done
 
     movzx ecx, BYTE PTR PC1[edx]
+    
+    INVOKE GetBit64, pKey, ecx ; EAX = bit value (0 or 1)
 
+    cmp  edx, 28
+    jge  AddToD
 
-    ; --------------------------------------------------------
-    ; Get corresponding bit from original 64-bit key
-    ;
-    ; EAX = bit 0/1
-    ; --------------------------------------------------------
+AddToC:
+    mov  ebx, C_Val
+    shl  ebx, 1
+    or   ebx, eax
+    mov  C_Val, ebx
+    jmp  NextPC1
 
-    push ecx
-    push esi
-    call GetBit64
+AddToD:
+    mov  ebx, D_Val
+    shl  ebx, 1
+    or   ebx, eax
+    mov  D_Val, ebx
 
-
-    ; --------------------------------------------------------
-    ; First 28 bits -> C
-    ; Remaining 28 bits -> D
-    ; --------------------------------------------------------
-
-    cmp edx, 28
-    jge PC1_ToD
-
-
-    ; --------------------------------------------------------
-    ; C = (C << 1) | bit
-    ; --------------------------------------------------------
-
-    shl edi, 1
-    or  edi, eax
-
-    jmp PC1_Next
-
-
-PC1_ToD:
-
-    ; --------------------------------------------------------
-    ; D = (D << 1) | bit
-    ; --------------------------------------------------------
-
-    shl ebx, 1
-    or  ebx, eax
-
-
-PC1_Next:
-
-    inc edx
-    jmp PC1_Loop
-
+NextPC1:
+    inc  edx
+    jmp  PC1_Loop
 
 PC1_Done:
-
-    ; --------------------------------------------------------
-    ; Store C0 / D0
-    ; --------------------------------------------------------
-
-    mov C_Val, edi
-    mov D_Val, ebx
-
-
-    pop edi
-    pop esi
-    pop edx
-    pop ecx
-    pop ebx
-
-    mov esp, ebp
-    pop ebp
-
-    ret 4
-
+    pop  esi
+    pop  edx
+    pop  ecx
+    pop  ebx
+    ret
 GenerateC0D0 ENDP
 
 
-
-; ============================================================
-; Rotate28
-;
-; Circular left rotation of a 28-bit value.
-;
-; Parameters:
-;
-;   [ebp+8]  = 28-bit value
-;   [ebp+12] = shift amount (1 or 2)
-;
-; Return:
-;
-;   EAX = rotated 28-bit value
-;
-; ============================================================
-
-Rotate28 PROC
-
-    push ebp
-    mov  ebp, esp
-
-    push ebx
-    push ecx
-
-
-    ; --------------------------------------------------------
-    ; Load value
-    ; --------------------------------------------------------
-
-    mov eax, [ebp + 8]
-
-    ; Keep only 28 bits
-    and eax, 0FFFFFFFh
-
-
-    ; --------------------------------------------------------
-    ; Shift count
-    ; --------------------------------------------------------
-
-    mov ecx, [ebp + 12]
-
-
-RotateLoop:
-
-    cmp ecx, 0
-    jle RotateDone
-
-
-    ; --------------------------------------------------------
-    ; Save bit 27
-    ;
-    ; This bit will wrap around to bit 0.
-    ; --------------------------------------------------------
-
-    mov ebx, eax
-
-    shr ebx, 27
-    and ebx, 1
-
-
-    ; --------------------------------------------------------
-    ; Shift left
-    ; --------------------------------------------------------
-
-    shl eax, 1
-
-    ; Keep only 28 bits
-    and eax, 0FFFFFFFh
-
-
-    ; --------------------------------------------------------
-    ; Insert wrapped bit
-    ; --------------------------------------------------------
-
-    or eax, ebx
-
-
-    dec ecx
-    jmp RotateLoop
-
-
-RotateDone:
-
-    pop ecx
-    pop ebx
-
-    mov esp, ebp
-    pop ebp
-
-    ret 8
-
-Rotate28 ENDP
-
-
-
-; ============================================================
-; GenerateSubKeyPC2
-;
-; Performs PC-2 using current C_Val / D_Val.
-;
-; Parameters:
-;
-;   [ebp+8] = destination pointer
-;
-; Output:
-;
-;   6 bytes = 48-bit subkey
-;
-; ============================================================
-
-GenerateSubKeyPC2 PROC
-
-    push ebp
-    mov  ebp, esp
-
-    push eax
-    push ebx
-    push ecx
-    push edx
-    push edi
-
-    ; --------------------------------------------------------
-    ; Destination
-    ; --------------------------------------------------------
-
-    mov edi, [ebp + 8]
-
-
-    ; --------------------------------------------------------
-    ; EBX = byte accumulator
-    ; ECX = output byte index
-    ; EDX = PC2 index
-    ; --------------------------------------------------------
-
-    xor ebx, ebx
-    xor ecx, ecx
-    xor edx, edx
-
-
-PC2_Loop:
-
-    cmp edx, 48
-    jge PC2_Done
-
-
-    ; --------------------------------------------------------
-    ; PC2[edx]
-    ; --------------------------------------------------------
-
-    movzx eax, BYTE PTR PC2[edx]
-
-
-    ; --------------------------------------------------------
-    ; Get bit from C/D
-    ;
-    ; EAX = 0 or 1
-    ; --------------------------------------------------------
-
-    push eax
-    call GetBitCD
-
-
-    ; --------------------------------------------------------
-    ; Append bit:
-    ;
-    ; accumulator = accumulator << 1 | bit
-    ; --------------------------------------------------------
-
-    shl ebx, 1
-    or  ebx, eax
-
-
-    ; --------------------------------------------------------
-    ; Next PC2 bit
-    ; --------------------------------------------------------
-
-    inc edx
-
-
-    ; --------------------------------------------------------
-    ; Every 8 bits -> store one byte
-    ; --------------------------------------------------------
-
-    mov eax, edx
-    and eax, 7
-
-    cmp eax, 0
-    jne PC2_Loop
-
-
-    ; --------------------------------------------------------
-    ; Store byte
-    ; --------------------------------------------------------
-
-    mov BYTE PTR [edi + ecx], bl
-
-    inc ecx
-
-    xor ebx, ebx
-
-    jmp PC2_Loop
-
-
-PC2_Done:
-
-    pop edi
-    pop edx
-    pop ecx
-    pop ebx
-    pop eax
-
-    mov esp, ebp
-    pop ebp
-
-    ret 4
-
-GenerateSubKeyPC2 ENDP
-
-
-
-; ============================================================
-; GetBitCD
-;
-; Gets one bit from current C/D state.
-;
-; Parameter:
-;
-;   [ebp+8] = position 1..56
-;
-; Return:
-;
-;   EAX = 0 or 1
-;
-; Mapping:
-;
-;   1..28 -> C
-;   29..56 -> D
-;
-; ============================================================
-
-GetBitCD PROC
-
-    push ebp
-    mov  ebp, esp
-
+; =========================================================
+; GetBitCD - อ่านบิตที่ pos (1..56) จาก C_Val หรือ D_Val
+; =========================================================
+GetBitCD PROC pos:DWORD
     push ecx
     push edx
 
+    mov  eax, pos
+    cmp  eax, 28
+    jg   FromD
 
-    mov ecx, [ebp + 8]
+FromC:
+    mov  ecx, 28
+    sub  ecx, eax
+    mov  edx, C_Val
+    shr  edx, cl
+    and  edx, 1
+    mov  eax, edx
+    jmp  GetCDDone
 
+FromD:
+    sub  eax, 28
+    mov  ecx, 28
+    sub  ecx, eax
+    mov  edx, D_Val
+    shr  edx, cl
+    and  edx, 1
+    mov  eax, edx
 
-    ; --------------------------------------------------------
-    ; Position 1..28 -> C
-    ; --------------------------------------------------------
-
-    cmp ecx, 28
-    jg ReadFromD
-
-
-    mov eax, C_Val
-
-    ; shift = 28 - position
-
-    mov edx, 28
-    sub edx, ecx
-
-    mov cl, dl
-
-    shr eax, cl
-    and eax, 1
-
-    jmp GetBitCD_Exit
-
-
-ReadFromD:
-
-    ; --------------------------------------------------------
-    ; Position 29..56 -> D
-    ; --------------------------------------------------------
-
-    mov eax, D_Val
-
-    ; Convert 29..56 -> 1..28
-
-    sub ecx, 28
-
-    ; shift = 28 - position
-
-    mov edx, 28
-    sub edx, ecx
-
-    mov cl, dl
-
-    shr eax, cl
-    and eax, 1
-
-
-GetBitCD_Exit:
-
-    pop edx
-    pop ecx
-
-    mov esp, ebp
-    pop ebp
-
-    ret 4
-
+GetCDDone:
+    pop  edx
+    pop  ecx
+    ret
 GetBitCD ENDP
 
 
+; =========================================================
+; Rotate28 - เลื่อนบิตทางซ้ายแบบวนรอบสำหรับ 28 บิต
+; =========================================================
+Rotate28 PROC val:DWORD, shiftCnt:DWORD
+    push ecx
+    push edx
 
-; ============================================================
-; GetBit64
-;
-; Reads one bit from original 64-bit DES key.
-;
-; Parameters:
-;
-;   [ebp+8]  = pointer to 8-byte key
-;   [ebp+12] = bit position 1..64
-;
-; Return:
-;
-;   EAX = 0 or 1
-;
-; DES bit ordering:
-;
-;   Byte 0 = bits 1..8
-;   Byte 1 = bits 9..16
-;   ...
-;   Byte 7 = bits 57..64
-;
-; Within each byte:
-;
-;   bit 1 = MSB
-;   bit 8 = LSB
-;
-; ============================================================
+    mov  eax, val
+    mov  ecx, shiftCnt
 
-GetBit64 PROC
+Rot28_Loop:
+    cmp  ecx, 0
+    je   Rot28_Done
 
-    push ebp
-    mov  ebp, esp
+    shl  eax, 1
+    test eax, 10000000h        ; เช็กบิตที่ 28
+    jz   NoWrap28
+    or   eax, 1                ; วนบิตกลับมาบิต 0
+NoWrap28:
+    and  eax, 0FFFFFFFh        ; Mask เหลือ 28 บิต
 
+    dec  ecx
+    jmp  Rot28_Loop
+
+Rot28_Done:
+    pop  edx
+    pop  ecx
+    ret
+Rotate28 ENDP
+
+
+; =========================================================
+; GenerateSubKeyPC2 - สร้าง Subkey 6 ไบต์ (48 บิต) ผ่าน PC2
+; =========================================================
+GenerateSubKeyPC2 PROC pOutBuffer:PTR BYTE
     push ebx
     push ecx
     push edx
     push esi
+    push edi
+
+    mov  edi, pOutBuffer
+    xor  edx, edx              ; bit counter 0..47
+    xor  ebx, ebx              ; accumulator byte
+    xor  esi, esi              ; byte index 0..5
+
+PC2_Loop:
+    cmp  edx, 48
+    jge  PC2_Done
+
+    movzx eax, BYTE PTR PC2[edx]
+    
+    INVOKE GetBitCD, eax       ; EAX = bit value
+
+    shl  ebx, 1
+    or   ebx, eax
+
+    inc  edx
+
+    mov  eax, edx
+    and  eax, 7
+    cmp  eax, 0
+    jne  PC2_Loop
+
+    mov  BYTE PTR [edi + esi], bl
+    inc  esi
+    xor  ebx, ebx
+    jmp  PC2_Loop
+
+PC2_Done:
+    pop  edi
+    pop  esi
+    pop  edx
+    pop  ecx
+    pop  ebx
+    ret
+GenerateSubKeyPC2 ENDP
 
 
-    ; --------------------------------------------------------
-    ; Key pointer
-    ; --------------------------------------------------------
+; =========================================================
+; GenerateKeySchedule - ฟังก์ชันหลัก (แก้ไขการจัด Stack แล้ว)
+; =========================================================
+GenerateKeySchedule PROC pKey:PTR BYTE, pSubKeys:PTR BYTE
+    push ebx
+    push ecx
+    push edx
+    push esi
+    push edi
 
-    mov esi, [ebp + 8]
+    mov  esi, pKey
+    mov  edi, pSubKeys
 
+    test esi, esi
+    jz   KeyScheduleFail
+    test edi, edi
+    jz   KeyScheduleFail
 
-    ; --------------------------------------------------------
-    ; Convert 1..64 -> 0..63
-    ; --------------------------------------------------------
+    ; Step 1: PC-1
+    INVOKE GenerateC0D0, esi
 
-    mov eax, [ebp + 12]
-    dec eax
+    ; Step 2: Loop 16 Rounds
+    xor  ebx, ebx              ; EBX = round 0..15
 
+KeyScheduleLoop:
+    cmp  ebx, 16
+    jge  KeyScheduleDone
 
-    ; --------------------------------------------------------
-    ; Byte index = bitIndex / 8
-    ; --------------------------------------------------------
+    ; Get shift count
+    movzx ecx, BYTE PTR ShiftSchedule[ebx]
 
-    mov ebx, eax
-    shr ebx, 3
+    ; Rotate C
+    INVOKE Rotate28, C_Val, ecx
+    mov  C_Val, eax
 
+    ; Rotate D
+    INVOKE Rotate28, D_Val, ecx
+    mov  D_Val, eax
 
-    ; --------------------------------------------------------
-    ; Bit index inside byte = bitIndex % 8
-    ; --------------------------------------------------------
+    ; Calculate output buffer pointer: pSubKeys + (round * 6)
+    mov  eax, ebx
+    imul eax, 6
+    lea  edx, [edi + eax]
 
-    and eax, 7
+    ; Generate Subkey via PC-2
+    INVOKE GenerateSubKeyPC2, edx
 
+    inc  ebx
+    jmp  KeyScheduleLoop
 
-    ; --------------------------------------------------------
-    ; Load target byte
-    ; --------------------------------------------------------
+KeyScheduleDone:
+    mov  eax, 1
+    jmp  KeyScheduleExit
 
-    movzx ecx, BYTE PTR [esi + ebx]
+KeyScheduleFail:
+    xor  eax, eax
 
-
-    ; --------------------------------------------------------
-    ; Convert MSB-first position to shift count
-    ;
-    ; position 0 -> shift 7
-    ; position 1 -> shift 6
-    ; ...
-    ; position 7 -> shift 0
-    ; --------------------------------------------------------
-
-    mov edx, 7
-    sub edx, eax
-
-    mov cl, dl
-
-
-    ; --------------------------------------------------------
-    ; Extract bit
-    ; --------------------------------------------------------
-
-    mov eax, 0
-
-    movzx eax, BYTE PTR [esi + ebx]
-
-    shr eax, cl
-    and eax, 1
-
-
-    pop esi
-    pop edx
-    pop ecx
-    pop ebx
-
-    mov esp, ebp
-    pop ebp
-
-    ret 8
-
-GetBit64 ENDP
-
+KeyScheduleExit:
+    pop  edi
+    pop  esi
+    pop  edx
+    pop  ecx
+    pop  ebx
+    ret
+GenerateKeySchedule ENDP
 
 END
