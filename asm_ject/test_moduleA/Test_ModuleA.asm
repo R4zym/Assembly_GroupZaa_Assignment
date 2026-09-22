@@ -1,4 +1,4 @@
-TITLE DES Module A - Shell Core & FSM Command Parser
+TITLE DES Module A - Shell Core & FSM Command Parser (Strict Validation Version)
 
 .386
 .model flat, stdcall
@@ -10,217 +10,323 @@ INCLUDELIB C:\Irvine\Kernel32.lib
 INCLUDELIB C:\Irvine\User32.lib
 
 
+; ============================================================
+; Command constants
+; ============================================================
+
+CMD_UNKNOWN EQU 0
+CMD_KEYGEN  EQU 1
+CMD_ENCRYPT EQU 2
+CMD_DECRYPT EQU 3
+CMD_DUMP    EQU 4
+CMD_STATS   EQU 5
+CMD_CLEAR   EQU 6
+CMD_EXIT    EQU 7
+
+
+; ============================================================
+; DATA
+; ============================================================
+
 .data
 
-; =========================================================
-; CONSTANTS
-; =========================================================
+; ------------------------------------------------------------
+; Prompt / messages
+; ------------------------------------------------------------
 
-CMD_UNKNOWN  EQU 0
-CMD_KEYGEN   EQU 1
-CMD_ENCRYPT  EQU 2
-CMD_DECRYPT  EQU 3
-CMD_DUMP     EQU 4
-CMD_STATS    EQU 5
-CMD_CLEAR    EQU 6
-CMD_EXIT     EQU 7
+prompt          BYTE "DES-SHELL> ",0
 
+msgUnknown      BYTE "Error: Unknown command.",0Dh,0Ah,0
 
-; =========================================================
-; STRINGS
-; =========================================================
+msgKeygen       BYTE "[KEYGEN command detected]",0Dh,0Ah,0
+msgEncrypt      BYTE "[ENCRYPT command detected]",0Dh,0Ah,0
+msgDecrypt      BYTE "[DECRYPT command detected]",0Dh,0Ah,0
+msgDump         BYTE "[DUMP command detected]",0Dh,0Ah,0
+msgStats        BYTE "[STATS command detected]",0Dh,0Ah,0
+msgClear        BYTE "[CLEAR command detected]",0Dh,0Ah,0
 
-prompt          BYTE "DES-SHELL> ", 0
+msgFilename     BYTE "Filename: ",0
+msgKey          BYTE "Key: ",0
 
-msgKeygen       BYTE "[KEYGEN command detected]", 0Dh, 0Ah, 0
-msgEncrypt      BYTE "[ENCRYPT command detected]", 0Dh, 0Ah, 0
-msgDecrypt      BYTE "[DECRYPT command detected]", 0Dh, 0Ah, 0
-msgDump         BYTE "[DUMP command detected]", 0Dh, 0Ah, 0
-msgStats        BYTE "[STATS command detected]", 0Dh, 0Ah, 0
-msgClear        BYTE "[CLEAR command detected]", 0Dh, 0Ah, 0
-
-msgUnknown      BYTE "ERROR: Unknown command", 0Dh, 0Ah, 0
-msgExit         BYTE "Exiting DES Command-Line Shell...", 0Dh, 0Ah, 0
+newline         BYTE 0Dh,0Ah,0
 
 
-; =========================================================
-; INPUT BUFFER
-; =========================================================
+; ------------------------------------------------------------
+; Input buffer
+; ------------------------------------------------------------
 
 inputBuffer     BYTE 256 DUP(0)
 
 
+; ------------------------------------------------------------
+; Parser result
+; ------------------------------------------------------------
+
+commandType     DWORD CMD_UNKNOWN
+
+filename        BYTE 256 DUP(0)
+
+keyString       BYTE 32 DUP(0)
+
+
+; ------------------------------------------------------------
+; Command strings
+; ------------------------------------------------------------
+
+cmdKEYGEN       BYTE "KEYGEN",0
+cmdENCRYPT      BYTE "ENCRYPT",0
+cmdDECRYPT      BYTE "DECRYPT",0
+cmdDUMP         BYTE "DUMP",0
+cmdSTATS        BYTE "STATS",0
+cmdCLEAR        BYTE "CLEAR",0
+cmdEXIT         BYTE "EXIT",0
+
+
+; ============================================================
+; CODE
+; ============================================================
+
 .code
 
 
-; =========================================================
-; MAIN
-; =========================================================
+; ============================================================
+; main
+; ============================================================
 
 main PROC
 
     push ebp
-    mov  ebp, esp
+    mov ebp, esp
 
 MainLoop:
 
-    ; -----------------------------------------------------
-    ; แสดง prompt
-    ; -----------------------------------------------------
+    ; --------------------------------------------------------
+    ; Display prompt
+    ; --------------------------------------------------------
 
-    mov  edx, OFFSET prompt
+    mov edx, OFFSET prompt
     call WriteString
 
 
-    ; -----------------------------------------------------
-    ; รับ command จาก user
-    ; -----------------------------------------------------
+    ; --------------------------------------------------------
+    ; Read command line
+    ; --------------------------------------------------------
 
-    mov  edx, OFFSET inputBuffer
-    mov  ecx, SIZEOF inputBuffer - 1
+    mov edx, OFFSET inputBuffer
+    mov ecx, SIZEOF inputBuffer - 1
     call ReadString
 
 
-    ; -----------------------------------------------------
-    ; Parse command
-    ;
-    ; EAX = command ID
-    ; -----------------------------------------------------
+    ; --------------------------------------------------------
+    ; Parse command line
+    ; --------------------------------------------------------
 
     push OFFSET inputBuffer
-    call ParseCommand
+    call ParseCommandLine
 
 
-    ; -----------------------------------------------------
-    ; ตรวจว่า command คืออะไร
-    ; -----------------------------------------------------
+    ; --------------------------------------------------------
+    ; Get parser result
+    ; --------------------------------------------------------
 
-    cmp  eax, CMD_KEYGEN
-    je   HandleKeygen
-
-    cmp  eax, CMD_ENCRYPT
-    je   HandleEncrypt
-
-    cmp  eax, CMD_DECRYPT
-    je   HandleDecrypt
-
-    cmp  eax, CMD_DUMP
-    je   HandleDump
-
-    cmp  eax, CMD_STATS
-    je   HandleStats
-
-    cmp  eax, CMD_CLEAR
-    je   HandleClear
-
-    cmp  eax, CMD_EXIT
-    je   HandleExit
+    mov eax, commandType
 
 
-    ; -----------------------------------------------------
-    ; ไม่รู้จัก command
-    ; -----------------------------------------------------
+    ; --------------------------------------------------------
+    ; Dispatch command
+    ; --------------------------------------------------------
 
-    mov  edx, OFFSET msgUnknown
+    cmp eax, CMD_KEYGEN
+    je HandleKeygen
+
+    cmp eax, CMD_ENCRYPT
+    je HandleEncrypt
+
+    cmp eax, CMD_DECRYPT
+    je HandleDecrypt
+
+    cmp eax, CMD_DUMP
+    je HandleDump
+
+    cmp eax, CMD_STATS
+    je HandleStats
+
+    cmp eax, CMD_CLEAR
+    je HandleClear
+
+    cmp eax, CMD_EXIT
+    je HandleExit
+
+
+    ; --------------------------------------------------------
+    ; Unknown command
+    ; --------------------------------------------------------
+
+    mov edx, OFFSET msgUnknown
     call WriteString
 
-    jmp  MainLoop
+    jmp MainLoop
 
 
-; =========================================================
-; COMMAND HANDLERS
-; =========================================================
+; ============================================================
+; KEYGEN
+; ============================================================
 
 HandleKeygen:
 
-    mov  edx, OFFSET msgKeygen
+    mov edx, OFFSET msgKeygen
     call WriteString
 
-    jmp  MainLoop
+    mov edx, OFFSET msgKey
+    call WriteString
 
+    mov edx, OFFSET keyString
+    call WriteString
+
+    mov edx, OFFSET newline
+    call WriteString
+
+    jmp MainLoop
+
+
+; ============================================================
+; ENCRYPT
+; ============================================================
 
 HandleEncrypt:
 
-    mov  edx, OFFSET msgEncrypt
+    mov edx, OFFSET msgEncrypt
     call WriteString
 
-    jmp  MainLoop
+    mov edx, OFFSET msgFilename
+    call WriteString
 
+    mov edx, OFFSET filename
+    call WriteString
+
+    mov edx, OFFSET newline
+    call WriteString
+
+    mov edx, OFFSET msgKey
+    call WriteString
+
+    mov edx, OFFSET keyString
+    call WriteString
+
+    mov edx, OFFSET newline
+    call WriteString
+
+    jmp MainLoop
+
+
+; ============================================================
+; DECRYPT
+; ============================================================
 
 HandleDecrypt:
 
-    mov  edx, OFFSET msgDecrypt
+    mov edx, OFFSET msgDecrypt
     call WriteString
 
-    jmp  MainLoop
+    mov edx, OFFSET msgFilename
+    call WriteString
 
+    mov edx, OFFSET filename
+    call WriteString
+
+    mov edx, OFFSET newline
+    call WriteString
+
+    mov edx, OFFSET msgKey
+    call WriteString
+
+    mov edx, OFFSET keyString
+    call WriteString
+
+    mov edx, OFFSET newline
+    call WriteString
+
+    jmp MainLoop
+
+
+; ============================================================
+; DUMP
+; ============================================================
 
 HandleDump:
 
-    mov  edx, OFFSET msgDump
+    mov edx, OFFSET msgDump
     call WriteString
 
-    jmp  MainLoop
+    mov edx, OFFSET msgFilename
+    call WriteString
 
+    mov edx, OFFSET filename
+    call WriteString
+
+    mov edx, OFFSET newline
+    call WriteString
+
+    jmp MainLoop
+
+
+; ============================================================
+; STATS
+; ============================================================
 
 HandleStats:
 
-    mov  edx, OFFSET msgStats
+    mov edx, OFFSET msgStats
     call WriteString
 
-    jmp  MainLoop
+    mov edx, OFFSET msgFilename
+    call WriteString
 
+    mov edx, OFFSET filename
+    call WriteString
+
+    mov edx, OFFSET newline
+    call WriteString
+
+    jmp MainLoop
+
+
+; ============================================================
+; CLEAR
+; ============================================================
 
 HandleClear:
 
-    mov  edx, OFFSET msgClear
-    call WriteString
+    call Clrscr
 
-    ; ตอนนี้ยังไม่ต้องทำ clear จริง
-    ; เอาไว้ทำในขั้นต่อไป
+    jmp MainLoop
 
-    jmp  MainLoop
 
+; ============================================================
+; EXIT
+; ============================================================
 
 HandleExit:
-
-    mov  edx, OFFSET msgExit
-    call WriteString
-
-    mov  esp, ebp
-    pop  ebp
 
     exit
 
 main ENDP
 
 
-
-; =========================================================
-; ParseCommand
+; ============================================================
+; ParseCommandLine
 ;
 ; Input:
-;   [ebp + 8] = pointer ไปยัง input string
-;
-; Return:
-;   EAX = command ID
-;
-; CMD_UNKNOWN = 0
-; CMD_KEYGEN  = 1
-; CMD_ENCRYPT = 2
-; CMD_DECRYPT = 3
-; CMD_DUMP    = 4
-; CMD_STATS   = 5
-; CMD_CLEAR   = 6
-; CMD_EXIT    = 7
-;
-; =========================================================
+;   [ebp+8] = address of input string
+; ============================================================
 
-ParseCommand PROC
+ParseCommandLine PROC
 
     push ebp
-    mov  ebp, esp
+    mov ebp, esp
 
+    ; Preserve registers
+    push eax
     push ebx
     push ecx
     push edx
@@ -228,245 +334,687 @@ ParseCommand PROC
     push edi
 
 
-    mov  esi, [ebp + 8]
+    ; --------------------------------------------------------
+    ; Default command = UNKNOWN
+    ; --------------------------------------------------------
+
+    mov commandType, CMD_UNKNOWN
 
 
-; =========================================================
-; Check KEYGEN
-; =========================================================
+    ; --------------------------------------------------------
+    ; Clear filename buffer
+    ; --------------------------------------------------------
 
-    mov  edi, OFFSET cmdKEYGEN
-    call StringEqual
+    mov edi, OFFSET filename
+    mov ecx, SIZEOF filename
 
-    cmp  eax, 1
-    je   FoundKEYGEN
+    mov al, 0
 
+ClearFilename:
 
-; =========================================================
-; Check ENCRYPT
-; =========================================================
+    mov BYTE PTR [edi], al
 
-    mov  edi, OFFSET cmdENCRYPT
-    call StringEqual
+    inc edi
 
-    cmp  eax, 1
-    je   FoundENCRYPT
+    loop ClearFilename
 
 
-; =========================================================
-; Check DECRYPT
-; =========================================================
+    ; --------------------------------------------------------
+    ; Clear key buffer
+    ; --------------------------------------------------------
 
-    mov  edi, OFFSET cmdDECRYPT
-    call StringEqual
+    mov edi, OFFSET keyString
+    mov ecx, SIZEOF keyString
 
-    cmp  eax, 1
-    je   FoundDECRYPT
+    mov al, 0
 
+ClearKey:
 
-; =========================================================
-; Check DUMP
-; =========================================================
+    mov BYTE PTR [edi], al
 
-    mov  edi, OFFSET cmdDUMP
-    call StringEqual
+    inc edi
 
-    cmp  eax, 1
-    je   FoundDUMP
+    loop ClearKey
 
 
-; =========================================================
-; Check STATS
-; =========================================================
+    ; --------------------------------------------------------
+    ; ESI = input string
+    ; --------------------------------------------------------
 
-    mov  edi, OFFSET cmdSTATS
-    call StringEqual
-
-    cmp  eax, 1
-    je   FoundSTATS
+    mov esi, [ebp+8]
 
 
-; =========================================================
-; Check CLEAR
-; =========================================================
+    ; --------------------------------------------------------
+    ; Skip leading spaces
+    ; --------------------------------------------------------
 
-    mov  edi, OFFSET cmdCLEAR
-    call StringEqual
-
-    cmp  eax, 1
-    je   FoundCLEAR
+    call SkipSpaces
 
 
-; =========================================================
-; Check EXIT
-; =========================================================
+    ; ========================================================
+    ; Check KEYGEN
+    ; ========================================================
 
-    mov  edi, OFFSET cmdEXIT
-    call StringEqual
+    mov edi, OFFSET cmdKEYGEN
 
-    cmp  eax, 1
-    je   FoundEXIT
+    call MatchWord
 
-
-; =========================================================
-; Unknown
-; =========================================================
-
-    mov  eax, CMD_UNKNOWN
-    jmp  ParseDone
+    cmp eax, 1
+    je ParseKEYGEN
 
 
-FoundKEYGEN:
+    ; ========================================================
+    ; Check ENCRYPT
+    ; ========================================================
 
-    mov  eax, CMD_KEYGEN
-    jmp  ParseDone
+    mov edi, OFFSET cmdENCRYPT
 
+    call MatchWord
 
-FoundENCRYPT:
-
-    mov  eax, CMD_ENCRYPT
-    jmp  ParseDone
-
-
-FoundDECRYPT:
-
-    mov  eax, CMD_DECRYPT
-    jmp  ParseDone
+    cmp eax, 1
+    je ParseENCRYPT
 
 
-FoundDUMP:
+    ; ========================================================
+    ; Check DECRYPT
+    ; ========================================================
 
-    mov  eax, CMD_DUMP
-    jmp  ParseDone
+    mov edi, OFFSET cmdDECRYPT
 
+    call MatchWord
 
-FoundSTATS:
-
-    mov  eax, CMD_STATS
-    jmp  ParseDone
-
-
-FoundCLEAR:
-
-    mov  eax, CMD_CLEAR
-    jmp  ParseDone
+    cmp eax, 1
+    je ParseDECRYPT
 
 
-FoundEXIT:
+    ; ========================================================
+    ; Check DUMP
+    ; ========================================================
 
-    mov  eax, CMD_EXIT
+    mov edi, OFFSET cmdDUMP
 
+    call MatchWord
+
+    cmp eax, 1
+    je ParseDUMP
+
+
+    ; ========================================================
+    ; Check STATS
+    ; ========================================================
+
+    mov edi, OFFSET cmdSTATS
+
+    call MatchWord
+
+    cmp eax, 1
+    je ParseSTATS
+
+
+    ; ========================================================
+    ; Check CLEAR
+    ; ========================================================
+
+    mov edi, OFFSET cmdCLEAR
+
+    call MatchWord
+
+    cmp eax, 1
+    je ParseCLEAR
+
+
+    ; ========================================================
+    ; Check EXIT
+    ; ========================================================
+
+    mov edi, OFFSET cmdEXIT
+
+    call MatchWord
+
+    cmp eax, 1
+    je ParseEXIT
+
+
+    ; --------------------------------------------------------
+    ; No command matched
+    ; --------------------------------------------------------
+
+    jmp ParseDone
+
+
+; ============================================================
+; Parse KEYGEN <key>
+; ============================================================
+
+ParseKEYGEN:
+
+    call SkipSpaces
+
+    mov edi, OFFSET keyString
+    mov ecx, SIZEOF keyString - 1
+    call CopyToken
+    cmp eax, 0
+    je ParseFailed
+
+    call EnsureEndOfLine
+    cmp eax, 0
+    je ParseFailed
+
+    mov esi, OFFSET keyString
+    call ValidateHexKey
+    cmp eax, 0
+    je ParseFailed
+
+    mov commandType, CMD_KEYGEN
+    jmp ParseDone
+
+
+; ============================================================
+; Parse ENCRYPT "<filename>" <key>
+; ============================================================
+
+ParseENCRYPT:
+
+    call SkipSpaces
+
+    mov edi, OFFSET filename
+    mov ecx, SIZEOF filename - 1
+    call CopyQuotedString
+    cmp eax, 0
+    je ParseFailed
+
+    call SkipSpaces
+
+    mov edi, OFFSET keyString
+    mov ecx, SIZEOF keyString - 1
+    call CopyToken
+    cmp eax, 0
+    je ParseFailed
+
+    call EnsureEndOfLine
+    cmp eax, 0
+    je ParseFailed
+
+    mov esi, OFFSET keyString
+    call ValidateHexKey
+    cmp eax, 0
+    je ParseFailed
+
+    mov commandType, CMD_ENCRYPT
+    jmp ParseDone
+
+
+; ============================================================
+; Parse DECRYPT "<filename>" <key>
+; ============================================================
+
+ParseDECRYPT:
+
+    call SkipSpaces
+
+    mov edi, OFFSET filename
+    mov ecx, SIZEOF filename - 1
+    call CopyQuotedString
+    cmp eax, 0
+    je ParseFailed
+
+    call SkipSpaces
+
+    mov edi, OFFSET keyString
+    mov ecx, SIZEOF keyString - 1
+    call CopyToken
+    cmp eax, 0
+    je ParseFailed
+
+    call EnsureEndOfLine
+    cmp eax, 0
+    je ParseFailed
+
+    mov esi, OFFSET keyString
+    call ValidateHexKey
+    cmp eax, 0
+    je ParseFailed
+
+    mov commandType, CMD_DECRYPT
+    jmp ParseDone
+
+
+; ============================================================
+; Parse DUMP "<filename>"
+; ============================================================
+
+ParseDUMP:
+
+    call SkipSpaces
+
+    mov edi, OFFSET filename
+    mov ecx, SIZEOF filename - 1
+    call CopyQuotedString
+    cmp eax, 0
+    je ParseFailed
+
+    call EnsureEndOfLine
+    cmp eax, 0
+    je ParseFailed
+
+    mov commandType, CMD_DUMP
+    jmp ParseDone
+
+
+; ============================================================
+; Parse STATS "<filename>"
+; ============================================================
+
+ParseSTATS:
+
+    call SkipSpaces
+
+    mov edi, OFFSET filename
+    mov ecx, SIZEOF filename - 1
+    call CopyQuotedString
+    cmp eax, 0
+    je ParseFailed
+
+    call EnsureEndOfLine
+    cmp eax, 0
+    je ParseFailed
+
+    mov commandType, CMD_STATS
+    jmp ParseDone
+
+
+; ============================================================
+; Parse CLEAR
+; ============================================================
+
+ParseCLEAR:
+
+    call EnsureEndOfLine
+    cmp eax, 0
+    je ParseFailed
+
+    mov commandType, CMD_CLEAR
+    jmp ParseDone
+
+
+; ============================================================
+; Parse EXIT
+; ============================================================
+
+ParseEXIT:
+
+    call EnsureEndOfLine
+    cmp eax, 0
+    je ParseFailed
+
+    mov commandType, CMD_EXIT
+    jmp ParseDone
+
+
+; ============================================================
+; Parse Failed Rule
+; ============================================================
+
+ParseFailed:
+
+    mov commandType, CMD_UNKNOWN
+
+
+; ============================================================
+; Parser finished
+; ============================================================
 
 ParseDone:
-    
-    pop edi
-    pop  esi
-    pop  edx
-    pop  ecx
-    pop  ebx
 
-    mov  esp, ebp
-    pop  ebp
+    pop edi
+    pop esi
+    pop edx
+    pop ecx
+    pop ebx
+    pop eax
+
+    mov esp, ebp
+    pop ebp
 
     ret 4
 
-ParseCommand ENDP
+ParseCommandLine ENDP
 
 
+; ============================================================
+; SkipSpaces
+; ============================================================
 
-; =========================================================
-; StringEqual
-;
-; เปรียบเทียบ string
-;
-; Input:
-;   ESI = string จาก user
-;   EDI = string ที่ต้องการเปรียบเทียบ
-;
-; Return:
-;   EAX = 1 ถ้าเหมือน
-;   EAX = 0 ถ้าไม่เหมือน
-;
-; =========================================================
+SkipSpaces PROC
 
-StringEqual PROC
+SkipSpacesLoop:
 
-    push ebp
-    mov  ebp, esp
+    mov al, BYTE PTR [esi]
+
+    cmp al, ' '
+
+    jne SkipSpacesDone
+
+    inc esi
+
+    jmp SkipSpacesLoop
+
+
+SkipSpacesDone:
+
+    ret
+
+SkipSpaces ENDP
+
+
+; ============================================================
+; MatchWord
+; ============================================================
+
+MatchWord PROC
+
+    push ebx
+    push edx
+
+
+    mov edx, esi
+
+
+MatchLoop:
+
+    mov al, BYTE PTR [esi]
+
+    mov bl, BYTE PTR [edi]
+
+
+    cmp bl, 0
+
+    je CheckWordEnd
+
+
+    cmp al, bl
+
+    jne WordNotMatch
+
+
+    inc esi
+    inc edi
+
+    jmp MatchLoop
+
+
+CheckWordEnd:
+
+    cmp al, 0
+
+    je WordMatch
+
+
+    cmp al, ' '
+
+    je WordMatch
+
+
+    jmp WordNotMatch
+
+
+WordMatch:
+
+    mov eax, 1
+
+    pop edx
+    pop ebx
+
+    ret
+
+
+WordNotMatch:
+
+    mov esi, edx
+
+    mov eax, 0
+
+    pop edx
+    pop ebx
+
+    ret
+
+MatchWord ENDP
+
+
+; ============================================================
+; EnsureEndOfLine
+; Return: EAX = 1 (Clean End), EAX = 0 (Junk trailing characters)
+; ============================================================
+
+EnsureEndOfLine PROC
+
+    call SkipSpaces
+
+    mov al, BYTE PTR [esi]
+
+    cmp al, 0
+    jne EOL_Fail
+
+    mov eax, 1
+    ret
+
+EOL_Fail:
+
+    mov eax, 0
+    ret
+
+EnsureEndOfLine ENDP
+
+
+; ============================================================
+; CopyToken
+; Return: EAX = 1 (Success), EAX = 0 (Empty)
+; ============================================================
+
+CopyToken PROC
+
+    push ebx
+    mov ebx, 0
+
+CopyTokenLoop:
+
+    cmp ecx, 0
+    je CopyTokenCheck
+
+    mov al, BYTE PTR [esi]
+
+    cmp al, 0
+    je CopyTokenCheck
+
+    cmp al, ' '
+    je CopyTokenCheck
+
+    mov BYTE PTR [edi], al
+
+    inc esi
+    inc edi
+    inc ebx
+    dec ecx
+
+    jmp CopyTokenLoop
+
+CopyTokenCheck:
+
+    mov BYTE PTR [edi], 0
+
+    cmp ebx, 0
+    je CopyTokenFail
+
+    mov eax, 1
+    pop ebx
+    ret
+
+CopyTokenFail:
+
+    mov eax, 0
+    pop ebx
+    ret
+
+CopyToken ENDP
+
+
+; ============================================================
+; CopyQuotedString
+; Expected format: "filename.txt"
+; Return: EAX = 1 (Success), EAX = 0 (Invalid Syntax/Empty)
+; ============================================================
+
+CopyQuotedString PROC
+
+    call SkipSpaces
+
+    mov al, BYTE PTR [esi]
+    cmp al, '"'
+    jne QuotedFail
+
+    inc esi
+    push edi
+
+CopyQuotedLoop:
+
+    cmp ecx, 0
+    je QuotedFailPop
+
+    mov al, BYTE PTR [esi]
+
+    cmp al, 0
+    je QuotedFailPop
+
+    cmp al, '"'
+    je QuotedClose
+
+    mov BYTE PTR [edi], al
+
+    inc esi
+    inc edi
+    dec ecx
+
+    jmp CopyQuotedLoop
+
+QuotedClose:
+
+    mov BYTE PTR [edi], 0
+    inc esi
+
+    pop ebx
+    cmp edi, ebx
+    je QuotedFail
+
+    mov eax, 1
+    ret
+
+QuotedFailPop:
+
+    pop ebx
+
+QuotedFail:
+
+    mov BYTE PTR [edi], 0
+    mov eax, 0
+    ret
+
+CopyQuotedString ENDP
+
+
+; ============================================================
+; ValidateHexKey
+; Checks if keyString is a valid 64-bit Hex key (16 hex chars / 0x prefix)
+; Return: EAX = 1 (Valid), EAX = 0 (Invalid)
+; ============================================================
+
+ValidateHexKey PROC
 
     push ebx
     push ecx
     push edx
     push esi
-    push edi
+
+    mov al, BYTE PTR [esi]
+    cmp al, '0'
+    jne CheckLoopStart
+
+    mov al, BYTE PTR [esi + 1]
+    cmp al, 'x'
+    je SkipPrefix
+    cmp al, 'X'
+    jne CheckLoopStart
+
+SkipPrefix:
+
+    add esi, 2
+
+CheckLoopStart:
+
+    mov ecx, 0
 
 
-CompareLoop:
+ValHexLoop:
 
-    mov  al, BYTE PTR [esi]
-    mov  bl, BYTE PTR [edi]
+    mov al, BYTE PTR [esi]
 
-
-    ; -----------------------------------------------------
-    ; ตัวอักษรไม่เหมือนกัน
-    ; -----------------------------------------------------
-
-    cmp  al, bl
-    jne  StringsNotEqual
+    cmp al, 0
+    je ValHexDone
 
 
-    ; -----------------------------------------------------
-    ; ถ้าเจอ NULL ทั้งคู่ แปลว่าเหมือนกัน
-    ; -----------------------------------------------------
-
-    cmp  al, 0
-    je   StringsEqual
+    cmp al, '0'
+    jb CheckUpper
+    cmp al, '9'
+    jbe ValidChar
 
 
-    inc  esi
-    inc  edi
+CheckUpper:
 
-    jmp  CompareLoop
-
-
-StringsEqual:
-
-    mov  eax, 1
-    jmp  StringCompareDone
+    cmp al, 'A'
+    jb CheckLower
+    cmp al, 'F'
+    jbe ValidChar
 
 
-StringsNotEqual:
+CheckLower:
 
-    mov  eax, 0
+    cmp al, 'a'
+    jb ValHexFail
+    cmp al, 'f'
+    ja ValHexFail
 
 
-StringCompareDone:
-    pop  edi
-    pop  esi
-    pop  edx
-    pop  ecx
-    pop  ebx
+ValidChar:
 
-    mov  esp, ebp
-    pop  ebp
+    inc ecx
+    inc esi
+    jmp ValHexLoop
+
+
+ValHexDone:
+
+    cmp ecx, 16
+    jne ValHexFail
+
+    mov eax, 1
+    jmp ValHexExit
+
+
+ValHexFail:
+
+    mov eax, 0
+
+
+ValHexExit:
+
+    pop esi
+    pop edx
+    pop ecx
+    pop ebx
 
     ret
 
-StringEqual ENDP
-
-
-
-; =========================================================
-; COMMAND STRINGS
-; =========================================================
-
-cmdKEYGEN   BYTE "KEYGEN", 0
-cmdENCRYPT  BYTE "ENCRYPT", 0
-cmdDECRYPT  BYTE "DECRYPT", 0
-cmdDUMP     BYTE "DUMP", 0
-cmdSTATS    BYTE "STATS", 0
-cmdCLEAR    BYTE "CLEAR", 0
-cmdEXIT     BYTE "EXIT", 0
+ValidateHexKey ENDP
 
 
 END main
