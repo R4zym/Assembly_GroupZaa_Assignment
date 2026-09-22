@@ -9,8 +9,11 @@ INCLUDELIB C:\Irvine\Irvine32.lib
 INCLUDELIB C:\Irvine\Kernel32.lib
 INCLUDELIB C:\Irvine\User32.lib
 
-; ประกาศ Prototype ของ Module B
+; =========================================================
+; EXTERNAL PROTOTYPES (เชื่อมต่อ Module B และ C)
+; =========================================================
 GenerateKeySchedule PROTO :PTR BYTE, :PTR BYTE
+DES_ProcessBlock    PROTO :PTR BYTE, :PTR BYTE, :PTR BYTE, :DWORD
 
 
 .data
@@ -78,6 +81,25 @@ SubKeyLabels    DWORD OFFSET labelK1,  OFFSET labelK2,  OFFSET labelK3,  OFFSET 
                 DWORD OFFSET labelK5,  OFFSET labelK6,  OFFSET labelK7,  OFFSET labelK8
                 DWORD OFFSET labelK9,  OFFSET labelK10, OFFSET labelK11, OFFSET labelK12
                 DWORD OFFSET labelK13, OFFSET labelK14, OFFSET labelK15, OFFSET labelK16
+
+; =========================================================
+; ENCRYPT / DECRYPT BUFFERS & MESSAGES
+; =========================================================
+inFileName      BYTE 260 DUP(0)
+outFileName     BYTE 260 DUP(0)
+fileBuffer      BYTE 65536 DUP(0)    ; Buffer อ่านไฟล์ (สูงสุด 64KB)
+encBuffer       BYTE 65536 DUP(0)    ; Buffer เก็บผลลัพธ์
+fileHandle      HANDLE ?
+fileSize        DWORD ?
+paddedSize      DWORD ?
+
+extEnc          BYTE ".enc", 0
+extDec          BYTE ".dec", 0
+msgEncSuccess   BYTE "File encrypted successfully -> ", 0
+msgDecSuccess   BYTE "File decrypted successfully -> ", 0
+msgFileError    BYTE "ERROR: Cannot open, read, or create file", 0Dh, 0Ah, 0
+msgParamError   BYTE "ERROR: Invalid parameters. Usage: <CMD> <filename> <key>", 0Dh, 0Ah, 0
+msgPadError     BYTE "ERROR: Invalid PKCS#7 Padding in decrypted data", 0Dh, 0Ah, 0
 
 
 ; =========================================================
@@ -182,15 +204,432 @@ KeygenFail:
     jmp  MainLoop
 
 
+; =========================================================
+; HANDLE ENCRYPT
+; =========================================================
 HandleEncrypt:
     mov  edx, OFFSET msgEncrypt
     call WriteString
+
+    ; --- Step 1: Parse Filename และ Hex Key จาก inputBuffer ---
+    mov  esi, OFFSET inputBuffer
+    add  esi, 7                      ; ข้ามคำว่า "ENCRYPT"
+
+SkipSpace1_Enc:
+    mov  al, [esi]
+    cmp  al, ' '
+    jne  CheckQuote_Enc
+    inc  esi
+    jmp  SkipSpace1_Enc
+
+CheckQuote_Enc:
+    cmp  al, 0
+    je   EncryptFailParams
+
+    mov  edi, OFFSET inFileName
+    cmp  al, '"'
+    jne  ParseNameNoQuote_Enc
+
+    inc  esi                         ; ข้ามเครื่องหมาย "
+ParseNameQuote_Enc:
+    mov  al, [esi]
+    cmp  al, '"'
+    je   DoneNameQuote_Enc
+    cmp  al, 0
+    je   EncryptFailParams
+    mov  [edi], al
+    inc  esi
+    inc  edi
+    jmp  ParseNameQuote_Enc
+DoneNameQuote_Enc:
+    inc  esi                         ; ข้ามเครื่องหมาย " ปิด
+    jmp  TerminateInFile_Enc
+
+ParseNameNoQuote_Enc:
+    mov  al, [esi]
+    cmp  al, ' '
+    je   TerminateInFile_Enc
+    cmp  al, 0
+    je   TerminateInFile_Enc
+    mov  [edi], al
+    inc  esi
+    inc  edi
+    jmp  ParseNameNoQuote_Enc
+
+TerminateInFile_Enc:
+    mov  BYTE PTR [edi], 0           ; ปิดท้าย inFileName ด้วย Null-byte
+
+    ; --- สร้างชื่อไฟล์ฝั่ง Output (inFileName + .enc) ---
+    mov  ebx, OFFSET inFileName
+    mov  edi, OFFSET outFileName
+CopyNameLoop_Enc:
+    mov  al, [ebx]
+    cmp  al, 0
+    je   AppendEnc_Enc
+    mov  [edi], al
+    inc  ebx
+    inc  edi
+    jmp  CopyNameLoop_Enc
+AppendEnc_Enc:
+    mov  ebx, OFFSET extEnc
+AppendEncLoop_Enc:
+    mov  al, [ebx]
+    mov  [edi], al
+    cmp  al, 0
+    je   DoneOutName_Enc
+    inc  ebx
+    inc  edi
+    jmp  AppendEncLoop_Enc
+DoneOutName_Enc:
+
+    ; --- เลื่อน Pointer ไปหา Hex Key ---
+SkipSpace2_Enc:
+    mov  al, [esi]
+    cmp  al, ' '
+    jne  CheckHexPrefix_Enc
+    inc  esi
+    jmp  SkipSpace2_Enc
+
+CheckHexPrefix_Enc:
+    cmp  al, 0
+    je   EncryptFailParams
+    cmp  al, '0'
+    jne  StartKeyConversion_Enc
+    mov  bl, [esi + 1]
+    cmp  bl, 'x'
+    je   SkipHexPrefix_Enc
+    cmp  bl, 'X'
+    jne  StartKeyConversion_Enc
+SkipHexPrefix_Enc:
+    add  esi, 2
+
+StartKeyConversion_Enc:
+    push OFFSET desKey
+    push esi
+    call ConvertHexKey
+    cmp  eax, 1
+    jne  EncryptFailKey
+
+    ; --- Step 2: เรียก Module B สร้าง Subkeys 16 รอบ ---
+    INVOKE GenerateKeySchedule, ADDR desKey, ADDR subKeys
+    cmp  eax, 1
+    jne  EncryptFailKey
+
+    ; --- Step 3: อ่านไฟล์ Plaintext เข้า Memory ---
+    mov  edx, OFFSET inFileName
+    call OpenInputFile
+    cmp  eax, INVALID_HANDLE_VALUE
+    je   EncryptFailFile
+    mov  fileHandle, eax
+
+    mov  edx, OFFSET fileBuffer
+    mov  ecx, SIZEOF fileBuffer - 8
+    mov  eax, fileHandle
+    call ReadFromFile
+    jc   CloseReadFail_Enc
+    mov  fileSize, eax
+
+    mov  eax, fileHandle
+    call CloseFile
+
+    ; --- Step 4: เติม PKCS#7 Padding ---
+    mov  eax, fileSize
+    xor  edx, edx
+    mov  ebx, 8
+    div  ebx                         ; EDX = fileSize % 8
+
+    mov  eax, 8
+    sub  eax, edx                    ; EAX = padLen (1 ถึง 8)
+    mov  ecx, eax                    ; ECX = จำนวนไบต์ที่ต้องเติม
+
+    mov  ebx, fileSize
+    add  ebx, eax
+    mov  paddedSize, ebx             ; paddedSize = fileSize + padLen
+
+    mov  edi, OFFSET fileBuffer
+    add  edi, fileSize               ; EDI ชี้ตำแหน่งท้ายข้อมูลเดิม
+PadLoop:
+    mov  [edi], cl                   ; เติมค่าไบต์เท่ากับ padLen
+    inc  edi
+    dec  eax
+    jnz  PadLoop
+
+    ; --- Step 5: Encrypt ทีละ 8 ไบต์ (ECB Mode) โดยใช้ Module C ---
+    mov  esi, OFFSET fileBuffer
+    mov  edi, OFFSET encBuffer
+    mov  ecx, paddedSize
+    shr  ecx, 3                      ; ECX = จำนวนบล็อก (paddedSize / 8)
+
+EncryptBlockLoop:
+    push ecx                         ; เก็บ Counter ไว้ใน Stack
+    INVOKE DES_ProcessBlock, esi, edi, ADDR subKeys, 0
+    add  esi, 8
+    add  edi, 8
+    pop  ecx
+    dec  ecx                         ; ไม่ใช้ Directives ระดับสูง
+    jnz  EncryptBlockLoop
+
+    ; --- Step 6: เขียนข้อมูล Ciphertext ลงไฟล์ผลลัพธ์ (.enc) ---
+    mov  edx, OFFSET outFileName
+    call CreateOutputFile
+    cmp  eax, INVALID_HANDLE_VALUE
+    je   EncryptFailFile
+    mov  fileHandle, eax
+
+    mov  edx, OFFSET encBuffer
+    mov  ecx, paddedSize
+    mov  eax, fileHandle
+    call WriteToFile
+
+    mov  eax, fileHandle
+    call CloseFile
+
+    ; --- แสดงผลการทำงานสำเร็จ ---
+    mov  edx, OFFSET msgEncSuccess
+    call WriteString
+    mov  edx, OFFSET outFileName
+    call WriteString
+    mov  edx, OFFSET newline
+    call WriteString
+
     jmp  MainLoop
 
+CloseReadFail_Enc:
+    mov  eax, fileHandle
+    call CloseFile
+EncryptFailFile:
+    mov  edx, OFFSET msgFileError
+    call WriteString
+    jmp  MainLoop
+
+EncryptFailParams:
+    mov  edx, OFFSET msgParamError
+    call WriteString
+    jmp  MainLoop
+
+EncryptFailKey:
+    mov  edx, OFFSET msgKeyFail
+    call WriteString
+    jmp  MainLoop
+
+
+; =========================================================
+; HANDLE DECRYPT
+; =========================================================
 HandleDecrypt:
     mov  edx, OFFSET msgDecrypt
     call WriteString
+
+    ; --- Step 1: Parse Filename และ Hex Key ---
+    mov  esi, OFFSET inputBuffer
+    add  esi, 7                      ; ข้ามคำว่า "DECRYPT"
+
+SkipSpace1_Dec:
+    mov  al, [esi]
+    cmp  al, ' '
+    jne  CheckQuote_Dec
+    inc  esi
+    jmp  SkipSpace1_Dec
+
+CheckQuote_Dec:
+    cmp  al, 0
+    je   DecryptFailParams
+
+    mov  edi, OFFSET inFileName
+    cmp  al, '"'
+    jne  ParseNameNoQuote_Dec
+
+    inc  esi
+ParseNameQuote_Dec:
+    mov  al, [esi]
+    cmp  al, '"'
+    je   DoneNameQuote_Dec
+    cmp  al, 0
+    je   DecryptFailParams
+    mov  [edi], al
+    inc  esi
+    inc  edi
+    jmp  ParseNameQuote_Dec
+DoneNameQuote_Dec:
+    inc  esi
+    jmp  TerminateInFile_Dec
+
+ParseNameNoQuote_Dec:
+    mov  al, [esi]
+    cmp  al, ' '
+    je   TerminateInFile_Dec
+    cmp  al, 0
+    je   TerminateInFile_Dec
+    mov  [edi], al
+    inc  esi
+    inc  edi
+    jmp  ParseNameNoQuote_Dec
+
+TerminateInFile_Dec:
+    mov  BYTE PTR [edi], 0
+
+    ; --- สร้างชื่อไฟล์ฝั่ง Output (inFileName + .dec) ---
+    mov  ebx, OFFSET inFileName
+    mov  edi, OFFSET outFileName
+CopyNameLoop_Dec:
+    mov  al, [ebx]
+    cmp  al, 0
+    je   AppendDec_Dec
+    mov  [edi], al
+    inc  ebx
+    inc  edi
+    jmp  CopyNameLoop_Dec
+AppendDec_Dec:
+    mov  ebx, OFFSET extDec
+AppendDecLoop_Dec:
+    mov  al, [ebx]
+    mov  [edi], al
+    cmp  al, 0
+    je   DoneOutName_Dec
+    inc  ebx
+    inc  edi
+    jmp  AppendDecLoop_Dec
+DoneOutName_Dec:
+
+    ; --- เลื่อน Pointer ไปหา Hex Key ---
+SkipSpace2_Dec:
+    mov  al, [esi]
+    cmp  al, ' '
+    jne  CheckHexPrefix_Dec
+    inc  esi
+    jmp  SkipSpace2_Dec
+
+CheckHexPrefix_Dec:
+    cmp  al, 0
+    je   DecryptFailParams
+    cmp  al, '0'
+    jne  StartKeyConversion_Dec
+    mov  bl, [esi + 1]
+    cmp  bl, 'x'
+    je   SkipHexPrefix_Dec
+    cmp  bl, 'X'
+    jne  StartKeyConversion_Dec
+SkipHexPrefix_Dec:
+    add  esi, 2
+
+StartKeyConversion_Dec:
+    push OFFSET desKey
+    push esi
+    call ConvertHexKey
+    cmp  eax, 1
+    jne  DecryptFailKey
+
+    ; --- Step 2: เรียก Module B สร้าง Subkeys ---
+    INVOKE GenerateKeySchedule, ADDR desKey, ADDR subKeys
+    cmp  eax, 1
+    jne  DecryptFailKey
+
+    ; --- Step 3: อ่านไฟล์ Ciphertext เข้า Memory ---
+    mov  edx, OFFSET inFileName
+    call OpenInputFile
+    cmp  eax, INVALID_HANDLE_VALUE
+    je   DecryptFailFile
+    mov  fileHandle, eax
+
+    mov  edx, OFFSET fileBuffer
+    mov  ecx, SIZEOF fileBuffer
+    mov  eax, fileHandle
+    call ReadFromFile
+    jc   CloseReadFail_Dec
+    mov  fileSize, eax
+
+    mov  eax, fileHandle
+    call CloseFile
+
+    ; ตรวจสอบว่าไฟล์มีขนาดเป็นพหุคูณของ 8 หรือไม่
+    mov  eax, fileSize
+    cmp  eax, 0
+    je   DecryptFailFile
+    test eax, 7
+    jnz  DecryptFailFile
+
+    ; --- Step 4: Decrypt ทีละ 8 ไบต์ (ECB Mode, Mode = 1) ---
+    mov  esi, OFFSET fileBuffer
+    mov  edi, OFFSET encBuffer
+    mov  ecx, fileSize
+    shr  ecx, 3                      ; ECX = จำนวนบล็อก
+
+DecryptBlockLoop:
+    push ecx
+    INVOKE DES_ProcessBlock, esi, edi, ADDR subKeys, 1
+    add  esi, 8
+    add  edi, 8
+    pop  ecx
+    dec  ecx
+    jnz  DecryptBlockLoop
+
+    ; --- Step 5: ตรวจสอบและตัด PKCS#7 Padding ---
+    mov  esi, OFFSET encBuffer
+    add  esi, fileSize
+    dec  esi                         ; ESI ชี้ไบต์สุดท้าย
+    movzx ecx, BYTE PTR [esi]        ; ECX = ค่า padLen (ไบต์สุดท้าย)
+
+    cmp  ecx, 1
+    jb   DecryptFailPad
+    cmp  ecx, 8
+    ja   DecryptFailPad
+
+    mov  eax, fileSize
+    sub  eax, ecx
+    mov  paddedSize, eax             ; paddedSize ตอนนี้คือความยาวจริงหลังตัด Padding
+
+    ; --- Step 6: เขียนข้อมูล Plaintext ลงไฟล์ผลลัพธ์ (.dec) ---
+    mov  edx, OFFSET outFileName
+    call CreateOutputFile
+    cmp  eax, INVALID_HANDLE_VALUE
+    je   DecryptFailFile
+    mov  fileHandle, eax
+
+    mov  edx, OFFSET encBuffer
+    mov  ecx, paddedSize
+    mov  eax, fileHandle
+    call WriteToFile
+
+    mov  eax, fileHandle
+    call CloseFile
+
+    ; --- แสดงผลสำเร็จ ---
+    mov  edx, OFFSET msgDecSuccess
+    call WriteString
+    mov  edx, OFFSET outFileName
+    call WriteString
+    mov  edx, OFFSET newline
+    call WriteString
+
     jmp  MainLoop
+
+CloseReadFail_Dec:
+    mov  eax, fileHandle
+    call CloseFile
+DecryptFailFile:
+    mov  edx, OFFSET msgFileError
+    call WriteString
+    jmp  MainLoop
+
+DecryptFailParams:
+    mov  edx, OFFSET msgParamError
+    call WriteString
+    jmp  MainLoop
+
+DecryptFailKey:
+    mov  edx, OFFSET msgKeyFail
+    call WriteString
+    jmp  MainLoop
+
+DecryptFailPad:
+    mov  edx, OFFSET msgPadError
+    call WriteString
+    jmp  MainLoop
+
+
+; =========================================================
+; PLACEHOLDERS FOR DUMP & STATS
+; =========================================================
 
 HandleDump:
     mov  edx, OFFSET msgDump
@@ -203,8 +642,7 @@ HandleStats:
     jmp  MainLoop
 
 HandleClear:
-    mov  edx, OFFSET msgClear
-    call WriteString
+    call Clrscr
     jmp  MainLoop
 
 HandleExit:
@@ -234,7 +672,6 @@ PrintLoop:
     mov  edx, SubKeyLabels[ebx*4]
     call WriteString
 
-    ; คำนวณ offset: subKeys + (round * 6)
     mov  eax, ebx
     imul eax, 6
     mov  esi, OFFSET subKeys
@@ -247,18 +684,16 @@ ByteLoop:
 
     movzx eax, BYTE PTR [esi + ecx]
 
-    ; High Nibble
-    push eax                     ; สำรองค่าไบต์เดิมไว้ใน Stack
+    push eax
     shr  eax, 4
     and  eax, 0Fh
-    mov  al, hexDigits[eax]      ; ย้ายตัวอักษร Hex เข้า AL
-    call WriteChar               ; พิมพ์ High Nibble
+    mov  al, hexDigits[eax]
+    call WriteChar
 
-    ; Low Nibble
-    pop  eax                     ; ดึงค่าไบต์เดิมกลับมาจาก Stack
+    pop  eax
     and  eax, 0Fh
-    mov  al, hexDigits[eax]      ; ย้ายตัวอักษร Hex เข้า AL
-    call WriteChar               ; พิมพ์ Low Nibble
+    mov  al, hexDigits[eax]
+    call WriteChar
 
     inc  ecx
     jmp  ByteLoop
@@ -339,7 +774,6 @@ ConvExit:
 ConvertHexKey ENDP
 
 
-; Fix: เปลี่ยน jbe IsDigit เป็น jbe HexIsDigit
 HexCharToNibble PROC
     cmp  al, '0'
     jb   InvalidHex
@@ -385,7 +819,6 @@ ParseCommand PROC
 
     mov  esi, [ebp + 8]
 
-    ; เช็กเฉพาะ 6 ตัวแรกสำหรับคำสั่ง KEYGEN
     mov  edi, OFFSET cmdKEYGEN
     mov  ecx, 6
     call StringPrefixEqual
@@ -393,22 +826,26 @@ ParseCommand PROC
     je   FoundKEYGEN
 
     mov  edi, OFFSET cmdENCRYPT
-    call StringEqual
+    mov  ecx, 7
+    call StringPrefixEqual
     cmp  eax, 1
     je   FoundENCRYPT
 
     mov  edi, OFFSET cmdDECRYPT
-    call StringEqual
+    mov  ecx, 7
+    call StringPrefixEqual
     cmp  eax, 1
     je   FoundDECRYPT
 
     mov  edi, OFFSET cmdDUMP
-    call StringEqual
+    mov  ecx, 4
+    call StringPrefixEqual
     cmp  eax, 1
     je   FoundDUMP
 
     mov  edi, OFFSET cmdSTATS
-    call StringEqual
+    mov  ecx, 5
+    call StringPrefixEqual
     cmp  eax, 1
     je   FoundSTATS
 

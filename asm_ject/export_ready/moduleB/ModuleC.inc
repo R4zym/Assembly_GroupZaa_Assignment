@@ -2,5 +2,5 @@
 ; ModuleC.inc - Public interface for DES Module C
 ; ============================================================
 
-DES_ProcessBlock PROTO :PTR BYTE, :PTR BYTE, :PTR BYTE, DWORD
-DES_FeistelFunction PROTO :PTR BYTE, :PTR BYTE, :PTR BYTE
+DES_ProcessBlock PROTO pInputBlock:DWORD, pOutputBlock:DWORD, pSubKeys:DWORD, mode:DWORD
+DES_FeistelFunction PROTO pR_In:DWORD, pSubKey_In:DWORD, pOutput_Out:DWORD
