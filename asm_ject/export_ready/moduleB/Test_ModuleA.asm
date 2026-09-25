@@ -321,14 +321,18 @@ StartKeyConversion_Enc:
     cmp  eax, 1
     jne  EncryptFailKey
 
-    ; เติม PKCS#7 Padding
+; เติม PKCS#7 Padding (แก้ไข: ถ้าหาร 8 ลงตัวพอดี ไม่ต้องเพิ่มบล็อกใหม่)
     mov  eax, fileSize
     xor  edx, edx
     mov  ebx, 8
-    div  ebx
+    div  ebx                     ; edx = เศษจากการหาร (fileSize % 8)
 
+    test edx, edx
+    jz   NoPaddingRequired       ; ถ้า edx == 0 (ลงตัวพอดี 8, 16 ไบต์) ให้ข้าม Padding
+
+    ; กรณีไม่ลงตัว (edx != 0) ให้เติมไบต์ส่วนขาดตามปกติ
     mov  eax, 8
-    sub  eax, edx
+    sub  eax, edx                ; eax = จำนวนไบต์ที่ต้องเติม (1..7 ไบต์)
     mov  ecx, eax
 
     mov  ebx, fileSize
@@ -337,12 +341,19 @@ StartKeyConversion_Enc:
 
     mov  edi, OFFSET fileBuffer
     add  edi, fileSize
+    
 PadLoop:
     mov  [edi], cl
     inc  edi
     dec  eax
     jnz  PadLoop
+    jmp  DonePadding
 
+NoPaddingRequired:
+    mov  eax, fileSize
+    mov  paddedSize, eax         ; กำหนดขนาดเท่ากับขนาดไฟล์เดิม (16 ไบต์เท่าเดิม)
+
+DonePadding:
     ; แสดงสถานะ Processing Block
     mov  edx, OFFSET msgProcBlock1
     call WriteString
@@ -573,21 +584,44 @@ DecryptBlockLoop:
     dec  ecx
     jnz  DecryptBlockLoop
 
-    ; ตรวจสอบและตัด Padding
+    ; =========================================================
+    ; ตรวจสอบและตัด PKCS#7 Padding
+    ; =========================================================
     mov  esi, OFFSET encBuffer
     add  esi, fileSize
-    dec  esi
-    movzx ecx, BYTE PTR [esi]
+    dec  esi                         ; ชี้ไปที่ไบต์สุดท้ายของ Buffer
+    movzx ecx, BYTE PTR [esi]        ; ecx = ค่าจำนวนไบต์ Padding (N)
 
     cmp  ecx, 1
     jb   DecryptFailPad
     cmp  ecx, 8
     ja   DecryptFailPad
 
+    ; วนลูปตรวจสอบไบต์ Padding ย้อนหลัง N ไบต์
+    push ecx
+    mov  edx, ecx
+VerifyPadLoop:
+    mov  al, [esi]
+    cmp  al, dl
+    jne  DecryptFailPadPop
+    dec  esi
+    loop VerifyPadLoop
+    pop  ecx
+
     mov  eax, fileSize
     sub  eax, ecx
     mov  paddedSize, eax
+    jmp  PadValid
 
+DecryptFailPadPop:
+    pop  ecx
+DecryptFailPad:
+    mov  edx, OFFSET msgPadError
+    call WriteString
+    jmp  MainLoop
+
+PadValid:
+    ; เขียนไฟล์ผลลัพธ์ถอดรหัสออกดิสก์
     mov  edx, OFFSET outFileName
     call CreateOutputFile
     cmp  eax, INVALID_HANDLE_VALUE
@@ -602,6 +636,7 @@ DecryptBlockLoop:
     mov  eax, fileHandle
     call CloseFile
 
+    ; แสดงข้อความถอดรหัสสำเร็จ
     mov  edx, OFFSET msgDecSuccess
     call WriteString
     mov  edx, OFFSET outFileName
@@ -626,11 +661,6 @@ DecryptFailParams:
 
 DecryptFailKey:
     mov  edx, OFFSET msgKeyFail
-    call WriteString
-    jmp  MainLoop
-
-DecryptFailPad:
-    mov  edx, OFFSET msgPadError
     call WriteString
     jmp  MainLoop
 
@@ -950,6 +980,7 @@ HexCharToNibble ENDP
 ; ParseCommand - รองรับ Case-Insensitive (a-z และ A-Z)
 ; =========================================================
 ParseCommand PROC
+
     push ebp
     mov  ebp, esp
     push ebx
@@ -1041,37 +1072,47 @@ StringPrefixEqual PROC
     push esi
     push edi
 
-PrefixLoop:
-    test ecx, ecx
-    jz   PrefixEqual
-    mov  al, [esi]
-    mov  bl, [edi]
-
-    ; แปลงตัวพิมพ์เล็กเป็นตัวพิมพ์ใหญ่ก่อนเปรียบเทียบ
-    cmp  al, 'a'
-    jb   NoUpper_Prefix
-    cmp  al, 'z'
-    ja   NoUpper_Prefix
-    and  al, 0DFh
-NoUpper_Prefix:
+CompareLoop:
+    mov  al, [edi]
+    test al, al
+    jz   PrefixEqual       ; เปรียบเทียบจบ Prefix แล้ว
+    mov  bl, [esi]
     cmp  al, bl
     jne  PrefixNotEqual
     inc  esi
     inc  edi
-    dec  ecx
-    jmp  PrefixLoop
+    jmp  CompareLoop
 
 PrefixEqual:
+    ; ตรวจสอบว่าอักขระถัดไปหลังจบ Prefix ต้องเป็น Whitespace หรือ Null Terminator
+    mov  al, [esi]
+    test al, al
+    jz   ValidPrefix
+    cmp  al, ' '
+    je   ValidPrefix
+    cmp  al, 9             ; Tab
+    je   ValidPrefix
+    cmp  al, 0Dh           ; CR (Enter)
+    je   ValidPrefix
+    cmp  al, 0Ah           ; LF (Newline)
+    je   ValidPrefix
+    xor  eax, eax          ; เป็นคำอื่น เช่น พิมพ์ ENCRYPTOR แต่ Prefix คือ ENCRYPT
+    jmp  PrefixDone
+
+ValidPrefix:
     mov  eax, 1
     jmp  PrefixDone
+
 PrefixNotEqual:
     xor  eax, eax
+
 PrefixDone:
     pop  edi
     pop  esi
     pop  ecx
     pop  ebx
     ret
+    
 StringPrefixEqual ENDP
 
 StringEqual PROC

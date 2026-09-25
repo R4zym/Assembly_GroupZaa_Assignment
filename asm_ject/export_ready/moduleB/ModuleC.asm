@@ -353,21 +353,22 @@ ColDone:
 
     movzx eax, BYTE PTR S_Boxes[eax]
 
-    ;  4  sboxOut Buffer
-    push ecx                    ;  ECX 
+;  4  sboxOut Buffer
+    push ecx                    ; เก็บ S-Box Index
+    push eax                    ; บันทึกค่าผลลัพธ์ S-Box ไว้บน Stack
     mov  edx, 0
 
 Write4BitsLoop:
     cmp  edx, 4
     jge  Write4BitsDone
 
-    mov  ebx, eax
+    mov  ebx, [esp]             ; อ่านค่า S-Box เดิมจาก Stack ([esp])
     mov  cl, 3
     sub  cl, dl
     shr  ebx, cl
     and  ebx, 1
 
-    mov  esi, [esp]             ;  ecx (S-Box Index)  stack
+    mov  esi, [esp + 4]         ; อ่าน S-Box Index จาก Stack ([esp + 4])
     imul esi, 4
     add  esi, edx
     inc  esi
@@ -382,7 +383,8 @@ Write4BitsLoop:
     jmp  Write4BitsLoop
 
 Write4BitsDone:
-    pop  ecx                    ;  ECX  SBoxLoop 
+    add  esp, 4                 ; คืนพื้นที่ Stack ของค่า S-Box
+    pop  ecx                    ; คืนค่า ECX (S-Box Index)
     inc  ecx
     jmp  SBoxLoop
 
@@ -401,7 +403,7 @@ SBoxDone:
     pop  edx
     pop  ecx
     pop  ebx
-    ret  12
+    ret  
 DES_FeistelFunction ENDP
 
 
@@ -535,7 +537,7 @@ FeistelDone:
     pop  edx
     pop  ecx
     pop  ebx
-    ret  16
+    ret  
 DES_ProcessBlock ENDP
 
 END
