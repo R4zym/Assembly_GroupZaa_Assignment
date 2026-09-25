@@ -585,40 +585,42 @@ DecryptBlockLoop:
     jnz  DecryptBlockLoop
 
     ; =========================================================
-    ; ตรวจสอบและตัด PKCS#7 Padding
+    ; ตรวจสอบ PKCS#7 Padding แบบยืดหยุ่น (Flexible Padding Check)
     ; =========================================================
     mov  esi, OFFSET encBuffer
     add  esi, fileSize
-    dec  esi                         ; ชี้ไปที่ไบต์สุดท้ายของ Buffer
-    movzx ecx, BYTE PTR [esi]        ; ecx = ค่าจำนวนไบต์ Padding (N)
+    dec  esi                         ; ชี้ไปที่ไบต์สุดท้าย
+    movzx ecx, BYTE PTR [esi]        ; ecx = ค่าไบต์สุดท้าย (N)
 
+    ; ถ้าไบต์สุดท้ายไม่อยู่ในช่วง 0x01 - 0x08 แสดงว่าไม่มี Padding
     cmp  ecx, 1
-    jb   DecryptFailPad
+    jb   NoPadFound
     cmp  ecx, 8
-    ja   DecryptFailPad
+    ja   NoPadFound
 
-    ; วนลูปตรวจสอบไบต์ Padding ย้อนหลัง N ไบต์
+    ; ตรวจสอบว่า N ไบต์สุดท้ายมีค่าเท่ากับ N ทั้งหมดหรือไม่
     push ecx
     mov  edx, ecx
 VerifyPadLoop:
     mov  al, [esi]
     cmp  al, dl
-    jne  DecryptFailPadPop
+    jne  NoPadFoundPop              ; ถ้าไม่ใช่ไบต์ Padding ให้ใช้ขนาดเดิม
     dec  esi
     loop VerifyPadLoop
     pop  ecx
 
+    ; กรณีเป็น Padding จริง -> ตัด Padding ออก
     mov  eax, fileSize
     sub  eax, ecx
     mov  paddedSize, eax
     jmp  PadValid
 
-DecryptFailPadPop:
+NoPadFoundPop:
     pop  ecx
-DecryptFailPad:
-    mov  edx, OFFSET msgPadError
-    call WriteString
-    jmp  MainLoop
+NoPadFound:
+    ; กรณีไม่มี Padding -> ใช้ขนาดไฟล์เดิม ไม่ต้องขึ้น Error
+    mov  eax, fileSize
+    mov  paddedSize, eax
 
 PadValid:
     ; เขียนไฟล์ผลลัพธ์ถอดรหัสออกดิสก์
