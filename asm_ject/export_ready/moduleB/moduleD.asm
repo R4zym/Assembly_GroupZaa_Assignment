@@ -17,7 +17,7 @@ PUBLIC ComputeBufferStats
 
 .data
 
-hdrAddr         BYTE "[Address] 00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F | ASCII", 0Dh, 0Ah, 0
+hdrAddr         BYTE "[Address]  00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F  | ASCII", 0Dh, 0Ah, 0
 hdrLine         BYTE "------------------------------------------------------------------", 0Dh, 0Ah, 0
 pipe            BYTE " | ", 0
 hexDigits       BYTE "0123456789ABCDEF"
@@ -26,11 +26,12 @@ hexDigits       BYTE "0123456789ABCDEF"
 statsSizeLbl    BYTE "Total File Size: ", 0
 statsBytesLbl   BYTE " Bytes", 0Dh, 0Ah, 0
 statsEntropyMsg BYTE "Entropy Statistics: High Diffusion (Ciphertext Uniformity Check PASSED)", 0Dh, 0Ah, 0
+statsLowEntMsg  BYTE "Entropy Statistics: Low Diffusion (Ciphertext Uniformity Check FAILED)", 0Dh, 0Ah, 0
 statsTopLbl     BYTE "Top Byte Occurrences:", 0Dh, 0Ah, 0
 
 strBracketHex   BYTE ". [0x", 0
-strColonOccur   BYTE "]: ", 0
-strOccurStar    BYTE " occurrences [", 0
+strColonOccur   BYTE "] : ", 0
+strOccurStar    BYTE " occurrences  [", 0
 strCloseBkt     BYTE "]", 0Dh, 0Ah, 0
 
 ; ใช้ DWORD 256 ช่อง เพื่อป้องกัน Integer Overflow
@@ -123,10 +124,11 @@ LineLoop:
     cmp  ebx, edi
     jae  DumpDone
 
-    ; 2. แสดง Offset 8 หลัก ตามด้วยเว้นวรรค 2 เคาะ
+    ; 2. แสดง Offset 8 หลัก ตามด้วยเว้นวรรค 3 เคาะ (ให้ตรงกับหัวตาราง)
     mov  eax, ebx
     call PrintHexAddress
     mov  al, ' '
+    call WriteChar
     call WriteChar
     call WriteChar
 
@@ -221,9 +223,18 @@ ComputeBufferStats PROC pBuf:PTR BYTE, len:DWORD
     mov  esi, pBuf
     mov  edi, len
 
-    test edi, edi
-    jle  StatsDone
     test esi, esi
+    jz   StatsDone
+
+    ; 0. พิมพ์ขนาดไฟล์ก่อนเสมอ (ไฟล์ว่างก็แสดง 0 Bytes)
+    mov  edx, OFFSET statsSizeLbl
+    call WriteString
+    mov  eax, edi
+    call WriteDec
+    mov  edx, OFFSET statsBytesLbl
+    call WriteString
+
+    test edi, edi
     jz   StatsDone
 
     ; 1. เคลียร์ Histogram 256 ช่อง (DWORD) ให้เป็น 0
@@ -246,15 +257,32 @@ CountFreqLoop:
     jmp  CountFreqLoop
 CountFreqDone:
 
-    ; 3. พิมพ์ข้อมูลสรุปขนาดไฟล์และสถานะ Entropy
-    mov  edx, OFFSET statsSizeLbl
-    call WriteString
-    mov  eax, edi
-    call WriteDec
-    mov  edx, OFFSET statsBytesLbl
-    call WriteString
-
+    ; 3. ตรวจ Entropy: นับจำนวนไบต์ที่ไม่ซ้ำกัน (bin ที่ไม่เป็น 0)
+    ;    PASSED ถ้า distinct * 2 >= min(len, 256)
+    ;    ciphertext กระจายทั่ว 256 ค่า / plaintext ภาษาอังกฤษใช้แค่ ~30 ค่า
+    xor  ecx, ecx                   ; ecx = distinct count
+    xor  ebx, ebx
+DistinctLoop:
+    cmp  ebx, 256
+    jae  DistinctDone
+    cmp  DWORD PTR Histogram[ebx * 4], 0
+    je   DistinctNext
+    inc  ecx
+DistinctNext:
+    inc  ebx
+    jmp  DistinctLoop
+DistinctDone:
+    mov  eax, edi                   ; eax = min(len, 256)
+    cmp  eax, 256
+    jbe  EntropyCompare
+    mov  eax, 256
+EntropyCompare:
+    shl  ecx, 1
     mov  edx, OFFSET statsEntropyMsg
+    cmp  ecx, eax
+    jae  EntropyPrint
+    mov  edx, OFFSET statsLowEntMsg
+EntropyPrint:
     call WriteString
     mov  edx, OFFSET statsTopLbl
     call WriteString
