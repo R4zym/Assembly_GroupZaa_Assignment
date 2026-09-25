@@ -4,6 +4,8 @@ TITLE DES Module B - Key Schedule Generation
 .model flat, stdcall
 .stack 4096
 
+PUBLIC GenerateKeySchedule
+
 .data
 
 ; PC-1 Table (56 entries: 1..64)

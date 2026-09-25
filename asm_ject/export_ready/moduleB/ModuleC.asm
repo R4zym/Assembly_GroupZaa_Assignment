@@ -353,38 +353,36 @@ ColDone:
 
     movzx eax, BYTE PTR S_Boxes[eax]
 
-   ; 4. เขียนผลลัพธ์ 4 บิตลงใน sboxOut Buffer
-    push ecx                    ; Save ECX (S-Box Index) ไว้ใน Stack [esp+4]
-    push eax                    ; Save EAX (ค่า S-Box 4 บิต) ไว้ใน Stack [esp]
+    ;  4  sboxOut Buffer
+    push ecx                    ;  ECX 
     mov  edx, 0
 
 Write4BitsLoop:
     cmp  edx, 4
     jge  Write4BitsDone
 
-    mov  ebx, [esp]             ; ดึงค่า S-Box 4 บิตตัวจริงจาก Stack เสมอ (ไม่หายแม้ SetBit ทำลาย EAX)
+    mov  ebx, eax
     mov  cl, 3
     sub  cl, dl
     shr  ebx, cl
-    and  ebx, 1                 ; ebx = ค่าบิต (0 หรือ 1)
+    and  ebx, 1
 
-    mov  esi, [esp + 4]         ; ดึงค่า S-Box Index (ECX) จาก Stack [esp+4]
+    mov  esi, [esp]             ;  ecx (S-Box Index)  stack
     imul esi, 4
     add  esi, edx
-    inc  esi                    ; ลำดับตำแหน่งบิต 1-indexed (1..32)
+    inc  esi
 
-    push ebx                    ; Bit value
-    push esi                    ; Bit position
+    push ebx
+    push esi
     lea  ebx, sboxOut
-    push ebx                    ; Buffer ptr
-    call SetBit                 ; เรียก SetBit
+    push ebx
+    call SetBit
 
     inc  edx
     jmp  Write4BitsLoop
 
 Write4BitsDone:
-    pop  eax                    ; คืนค่า EAX จาก Stack
-    pop  ecx                    ; คืนค่า ECX จาก Stack
+    pop  ecx                    ;  ECX  SBoxLoop 
     inc  ecx
     jmp  SBoxLoop
 
