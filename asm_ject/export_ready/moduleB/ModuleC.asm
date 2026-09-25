@@ -80,27 +80,13 @@ S_Boxes  BYTE 14,  4, 13,  1,  2, 15, 11,  8,  3, 10,  6, 12,  5,  9,  0,  7
          BYTE  7, 11,  4,  1,  9, 12, 14,  2,  0,  6, 10, 13, 15,  3,  5,  8
          BYTE  2,  1, 14,  7,  4, 10,  8, 13, 15, 12,  9,  0,  3,  5,  6, 11
 
-; GenerateKeySchedule is declared by ModuleB.inc
-
-
 .code
 
 PUBLIC DES_FeistelFunction
 PUBLIC DES_ProcessBlock
 
 ; =========================================================
-; MAIN PROCEDURE
-; =========================================================
-
-
-; =========================================================
-; HELPER: PrintHexBlock
-; =========================================================
-
-
-
-; =========================================================
-; HELPER: ExtractBit
+; HELPER: ExtractBit (1-indexed, MSB First)
 ; =========================================================
 ExtractBit PROC
     push ebp
@@ -110,9 +96,9 @@ ExtractBit PROC
     push edx
     push esi
 
-    mov  esi, [ebp + 8]
-    mov  eax, [ebp + 12]
-    dec  eax                   ; 0-indexed
+    mov  esi, [ebp + 8]         ; Buffer ptr
+    mov  eax, [ebp + 12]        ; Bit position (1-based)
+    dec  eax                   ; 0-based
 
     mov  ebx, eax
     shr  ebx, 3                 ; Byte Index
@@ -135,9 +121,8 @@ ExtractBit PROC
     ret  8
 ExtractBit ENDP
 
-
 ; =========================================================
-; HELPER: SetBit
+; HELPER: SetBit (1-indexed, MSB First)
 ; =========================================================
 SetBit PROC
     push ebp
@@ -149,10 +134,10 @@ SetBit PROC
 
     mov  esi, [ebp + 8]
     mov  eax, [ebp + 12]
-    dec  eax                   ; 0-indexed
+    dec  eax
 
     mov  ebx, eax
-    shr  ebx, 3                 ; Byte Index
+    shr  ebx, 3
 
     and  eax, 7
     mov  edx, 7
@@ -183,7 +168,6 @@ SetBitDone:
     pop  ebp
     ret  12
 SetBit ENDP
-
 
 ; =========================================================
 ; CORE: PermuteData
@@ -248,7 +232,6 @@ PermDone:
     pop  ebp
     ret  16
 PermuteData ENDP
-
 
 ; =========================================================
 ; CORE: DES_FeistelFunction f(R, K)
@@ -330,7 +313,7 @@ ColLoop:
     mov  eax, ecx
     imul eax, 6
     add  eax, edx
-    inc  eax                    ; bit position
+    inc  eax
     push eax
     lea  eax, xorBuffer
     push eax
@@ -343,7 +326,7 @@ ColLoop:
     jmp  ColLoop
 ColDone:
 
-    ; Offset S-Box = (i * 64) + (Row * 16) + Column
+    ; S-Box lookup: (Box * 64) + (Row * 16) + Col
     mov  eax, ecx
     shl  eax, 6
     mov  edx, ebx
@@ -353,22 +336,21 @@ ColDone:
 
     movzx eax, BYTE PTR S_Boxes[eax]
 
-;  4  sboxOut Buffer
-    push ecx                    ; เก็บ S-Box Index
-    push eax                    ; บันทึกค่าผลลัพธ์ S-Box ไว้บน Stack
+    ; เขียน 4 บิตลง sboxOut Buffer
+    push ecx
     mov  edx, 0
 
 Write4BitsLoop:
     cmp  edx, 4
     jge  Write4BitsDone
 
-    mov  ebx, [esp]             ; อ่านค่า S-Box เดิมจาก Stack ([esp])
+    mov  ebx, eax
     mov  cl, 3
     sub  cl, dl
     shr  ebx, cl
     and  ebx, 1
 
-    mov  esi, [esp + 4]         ; อ่าน S-Box Index จาก Stack ([esp + 4])
+    mov  esi, [esp]             ; Restore ecx (S-Box Index) from stack
     imul esi, 4
     add  esi, edx
     inc  esi
@@ -383,8 +365,7 @@ Write4BitsLoop:
     jmp  Write4BitsLoop
 
 Write4BitsDone:
-    add  esp, 4                 ; คืนพื้นที่ Stack ของค่า S-Box
-    pop  ecx                    ; คืนค่า ECX (S-Box Index)
+    pop  ecx
     inc  ecx
     jmp  SBoxLoop
 
@@ -403,12 +384,12 @@ SBoxDone:
     pop  edx
     pop  ecx
     pop  ebx
-    ret  
+    ret  12
 DES_FeistelFunction ENDP
-
 
 ; =========================================================
 ; CORE: DES_ProcessBlock (Single 64-bit Block)
+; [FIXED]: ป้องกัน Big-Endian / Little-Endian Conflict
 ; =========================================================
 DES_ProcessBlock PROC pInputBlock:DWORD, pOutputBlock:DWORD, pSubKeys:DWORD, mode:DWORD
     LOCAL ipBlock[8]:BYTE
@@ -432,14 +413,27 @@ DES_ProcessBlock PROC pInputBlock:DWORD, pOutputBlock:DWORD, pSubKeys:DWORD, mod
     push pInputBlock
     call PermuteData
 
+    ; คัดลอกแบบ Byte-by-Byte เพื่อรักษาลำดับ Big-Endian ไว้
     lea  esi, ipBlock
     lea  edi, L_Val
-    mov  eax, DWORD PTR [esi]
-    mov  DWORD PTR [edi], eax
+    mov  al, [esi]
+    mov  [edi], al
+    mov  al, [esi+1]
+    mov  [edi+1], al
+    mov  al, [esi+2]
+    mov  [edi+2], al
+    mov  al, [esi+3]
+    mov  [edi+3], al
 
     lea  edi, R_Val
-    mov  eax, DWORD PTR [esi + 4]
-    mov  DWORD PTR [edi], eax
+    mov  al, [esi+4]
+    mov  [edi], al
+    mov  al, [esi+5]
+    mov  [edi+1], al
+    mov  al, [esi+6]
+    mov  [edi+2], al
+    mov  al, [esi+7]
+    mov  [edi+3], al
 
     ; 2. 16-Round Feistel Loop
     mov  eax, mode
@@ -466,11 +460,19 @@ CheckDecryptExit:
     jl   FeistelDone
 
 ProcessRound:
+    ; nextR = R_Val
     lea  esi, R_Val
     lea  edi, nextR
-    mov  eax, DWORD PTR [esi]
-    mov  DWORD PTR [edi], eax
+    mov  al, [esi]
+    mov  [edi], al
+    mov  al, [esi+1]
+    mov  [edi+1], al
+    mov  al, [esi+2]
+    mov  [edi+2], al
+    mov  al, [esi+3]
+    mov  [edi+3], al
 
+    ; ดึง SubKey ประจำรอบ
     mov  esi, pSubKeys
     mov  eax, ebx
     imul eax, 6
@@ -483,6 +485,7 @@ ProcessRound:
     push eax
     call DES_FeistelFunction
 
+    ; R_Val = L_Val XOR fOut
     lea  esi, L_Val
     lea  edi, fOut
     lea  edx, R_Val
@@ -498,10 +501,17 @@ XorRLoop:
     jmp  XorRLoop
 XorRDone:
 
+    ; L_Val = nextR
     lea  esi, nextR
     lea  edi, L_Val
-    mov  eax, DWORD PTR [esi]
-    mov  DWORD PTR [edi], eax
+    mov  al, [esi]
+    mov  [edi], al
+    mov  al, [esi+1]
+    mov  [edi+1], al
+    mov  al, [esi+2]
+    mov  [edi+2], al
+    mov  al, [esi+3]
+    mov  [edi+3], al
 
     mov  eax, mode
     cmp  eax, 1
@@ -514,15 +524,27 @@ DecrRound:
 
 FeistelDone:
 
-    ; 3. 32-bit Swap (R16 + L16)
+    ; 3. 32-bit Swap (R16 + L16) เข้า preOutput
     lea  esi, R_Val
     lea  edi, preOutput
-    mov  eax, DWORD PTR [esi]
-    mov  DWORD PTR [edi], eax
+    mov  al, [esi]
+    mov  [edi], al
+    mov  al, [esi+1]
+    mov  [edi+1], al
+    mov  al, [esi+2]
+    mov  [edi+2], al
+    mov  al, [esi+3]
+    mov  [edi+3], al
 
     lea  esi, L_Val
-    mov  eax, DWORD PTR [esi]
-    mov  DWORD PTR [edi + 4], eax
+    mov  al, [esi]
+    mov  [edi+4], al
+    mov  al, [esi+1]
+    mov  [edi+5], al
+    mov  al, [esi+2]
+    mov  [edi+6], al
+    mov  al, [esi+3]
+    mov  [edi+7], al
 
     ; 4. Inverse Initial Permutation (FP / IP^-1)
     push 64
@@ -537,7 +559,7 @@ FeistelDone:
     pop  edx
     pop  ecx
     pop  ebx
-    ret  
+    ret  16
 DES_ProcessBlock ENDP
 
 END

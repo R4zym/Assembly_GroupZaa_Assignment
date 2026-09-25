@@ -74,7 +74,7 @@ SubKeyLabels    DWORD OFFSET labelK1,  OFFSET labelK2,  OFFSET labelK3,  OFFSET 
                 DWORD OFFSET labelK13, OFFSET labelK14, OFFSET labelK15, OFFSET labelK16
 
 ; =========================================================
-; ENCRYPT / DECRYPT BUFFERS & MESSAGES (ตรงตาม PDF)
+; ENCRYPT / DECRYPT BUFFERS & MESSAGES
 ; =========================================================
 inFileName      BYTE 260 DUP(0)
 outFileName     BYTE 260 DUP(0)
@@ -109,9 +109,57 @@ subKeys         BYTE 96 DUP(0)
 
 .code
 
+; =========================================================
+; Helper: ClearBuffers - ล้างบัฟเฟอร์หน่วยความจำป้องกันข้อมูลเก่าตกค้าง
+; =========================================================
+ClearBuffers PROC
+    push eax
+    push ecx
+    push edi
+
+    cld
+    xor  eax, eax
+
+    ; ล้าง inFileName (260 ไบต์)
+    mov  edi, OFFSET inFileName
+    mov  ecx, SIZEOF inFileName
+    rep  stosb
+
+    ; ล้าง outFileName (260 ไบต์)
+    mov  edi, OFFSET outFileName
+    mov  ecx, SIZEOF outFileName
+    rep  stosb
+
+    ; ล้าง fileBuffer (65536 ไบต์)
+    mov  edi, OFFSET fileBuffer
+    mov  ecx, SIZEOF fileBuffer
+    rep  stosb
+
+    ; ล้าง encBuffer (65536 ไบต์)
+    mov  edi, OFFSET encBuffer
+    mov  ecx, SIZEOF encBuffer
+    rep  stosb
+
+    ; ล้าง desKey & subKeys
+    mov  edi, OFFSET desKey
+    mov  ecx, SIZEOF desKey
+    rep  stosb
+
+    mov  edi, OFFSET subKeys
+    mov  ecx, SIZEOF subKeys
+    rep  stosb
+
+    pop  edi
+    pop  ecx
+    pop  eax
+    ret
+ClearBuffers ENDP
+
 main PROC
 
 MainLoop:
+    call ClearBuffers               ; ล้างบัฟเฟอร์ทุกรอบคำสั่ง
+
     mov  edx, OFFSET prompt
     call WriteString
 
@@ -160,9 +208,22 @@ HandleKeygen:
 SkipSpace_Keygen:
     mov  al, [esi]
     cmp  al, ' '
-    jne  StartKeyConv
+    jne  CheckPrefix_Keygen
     inc  esi
     jmp  SkipSpace_Keygen
+
+CheckPrefix_Keygen:
+    test al, al
+    jz   KeygenFail
+    cmp  al, '0'
+    jne  StartKeyConv
+    mov  bl, [esi + 1]
+    cmp  bl, 'x'
+    je   SkipPrefix_Keygen
+    cmp  bl, 'X'
+    jne  StartKeyConv
+SkipPrefix_Keygen:
+    add  esi, 2
 
 StartKeyConv:
     push OFFSET desKey
@@ -301,7 +362,7 @@ StartKeyConversion_Enc:
     mov  eax, fileHandle
     call CloseFile
 
-    ; แสดงข้อความ Loading... ตาม PDF
+    ; แสดงข้อความ Loading...
     mov  edx, OFFSET msgLoad1
     call WriteString
     mov  edx, OFFSET inFileName
@@ -321,18 +382,14 @@ StartKeyConversion_Enc:
     cmp  eax, 1
     jne  EncryptFailKey
 
-; เติม PKCS#7 Padding (แก้ไข: ถ้าหาร 8 ลงตัวพอดี ไม่ต้องเพิ่มบล็อกใหม่)
+    ; เติม PKCS#7 Padding
     mov  eax, fileSize
     xor  edx, edx
     mov  ebx, 8
-    div  ebx                     ; edx = เศษจากการหาร (fileSize % 8)
+    div  ebx
 
-    test edx, edx
-    jz   NoPaddingRequired       ; ถ้า edx == 0 (ลงตัวพอดี 8, 16 ไบต์) ให้ข้าม Padding
-
-    ; กรณีไม่ลงตัว (edx != 0) ให้เติมไบต์ส่วนขาดตามปกติ
     mov  eax, 8
-    sub  eax, edx                ; eax = จำนวนไบต์ที่ต้องเติม (1..7 ไบต์)
+    sub  eax, edx
     mov  ecx, eax
 
     mov  ebx, fileSize
@@ -341,19 +398,12 @@ StartKeyConversion_Enc:
 
     mov  edi, OFFSET fileBuffer
     add  edi, fileSize
-    
 PadLoop:
     mov  [edi], cl
     inc  edi
     dec  eax
     jnz  PadLoop
-    jmp  DonePadding
 
-NoPaddingRequired:
-    mov  eax, fileSize
-    mov  paddedSize, eax         ; กำหนดขนาดเท่ากับขนาดไฟล์เดิม (16 ไบต์เท่าเดิม)
-
-DonePadding:
     ; แสดงสถานะ Processing Block
     mov  edx, OFFSET msgProcBlock1
     call WriteString
@@ -584,46 +634,21 @@ DecryptBlockLoop:
     dec  ecx
     jnz  DecryptBlockLoop
 
-    ; =========================================================
-    ; ตรวจสอบ PKCS#7 Padding แบบยืดหยุ่น (Flexible Padding Check)
-    ; =========================================================
+    ; ตรวจสอบและตัด PKCS#7 Padding
     mov  esi, OFFSET encBuffer
     add  esi, fileSize
-    dec  esi                         ; ชี้ไปที่ไบต์สุดท้าย
-    movzx ecx, BYTE PTR [esi]        ; ecx = ค่าไบต์สุดท้าย (N)
-
-    ; ถ้าไบต์สุดท้ายไม่อยู่ในช่วง 0x01 - 0x08 แสดงว่าไม่มี Padding
-    cmp  ecx, 1
-    jb   NoPadFound
-    cmp  ecx, 8
-    ja   NoPadFound
-
-    ; ตรวจสอบว่า N ไบต์สุดท้ายมีค่าเท่ากับ N ทั้งหมดหรือไม่
-    push ecx
-    mov  edx, ecx
-VerifyPadLoop:
-    mov  al, [esi]
-    cmp  al, dl
-    jne  NoPadFoundPop              ; ถ้าไม่ใช่ไบต์ Padding ให้ใช้ขนาดเดิม
     dec  esi
-    loop VerifyPadLoop
-    pop  ecx
+    movzx ecx, BYTE PTR [esi]
 
-    ; กรณีเป็น Padding จริง -> ตัด Padding ออก
+    cmp  ecx, 1
+    jb   DecryptFailPad
+    cmp  ecx, 8
+    ja   DecryptFailPad
+
     mov  eax, fileSize
     sub  eax, ecx
     mov  paddedSize, eax
-    jmp  PadValid
 
-NoPadFoundPop:
-    pop  ecx
-NoPadFound:
-    ; กรณีไม่มี Padding -> ใช้ขนาดไฟล์เดิม ไม่ต้องขึ้น Error
-    mov  eax, fileSize
-    mov  paddedSize, eax
-
-PadValid:
-    ; เขียนไฟล์ผลลัพธ์ถอดรหัสออกดิสก์
     mov  edx, OFFSET outFileName
     call CreateOutputFile
     cmp  eax, INVALID_HANDLE_VALUE
@@ -638,7 +663,6 @@ PadValid:
     mov  eax, fileHandle
     call CloseFile
 
-    ; แสดงข้อความถอดรหัสสำเร็จ
     mov  edx, OFFSET msgDecSuccess
     call WriteString
     mov  edx, OFFSET outFileName
@@ -663,6 +687,11 @@ DecryptFailParams:
 
 DecryptFailKey:
     mov  edx, OFFSET msgKeyFail
+    call WriteString
+    jmp  MainLoop
+
+DecryptFailPad:
+    mov  edx, OFFSET msgPadError
     call WriteString
     jmp  MainLoop
 
@@ -894,6 +923,7 @@ DisplaySubKeys ENDP
 
 ; =========================================================
 ; ConvertHexKey - แปลง 16-Hex Chars -> 8-Byte Binary
+; [FIXED]: ตรวจจับตัวอักษรเกิน (ห้ามพิมพ์ HEX เกิน 16 ตัว)
 ; =========================================================
 ConvertHexKey PROC
     push ebp
@@ -910,7 +940,7 @@ ConvertHexKey PROC
     xor  ecx, ecx
 ConvLoop:
     cmp  ecx, 8
-    jge  ConvDone
+    jge  CheckTrailingHex
 
     mov  al, [esi]
     call HexCharToNibble
@@ -930,6 +960,19 @@ ConvLoop:
     inc  esi
     inc  ecx
     jmp  ConvLoop
+
+CheckTrailingHex:
+    ; ตรวจสอบว่ามีตัวอักษรอื่นเกินมาหรือไม่ (ต้องเป็น 0, Space, หรือ CRLF เท่านั้น)
+    mov  al, [esi]
+    test al, al
+    jz   ConvDone
+    cmp  al, ' '
+    je   ConvDone
+    cmp  al, 0Dh
+    je   ConvDone
+    cmp  al, 0Ah
+    je   ConvDone
+    jmp  ConvFail                   ; ถ้ายังมีตัวอักษรต่อท้าย -> แจ้ง Error ทันที!
 
 ConvDone:
     mov  eax, 1
@@ -982,7 +1025,6 @@ HexCharToNibble ENDP
 ; ParseCommand - รองรับ Case-Insensitive (a-z และ A-Z)
 ; =========================================================
 ParseCommand PROC
-
     push ebp
     mov  ebp, esp
     push ebx
@@ -1074,47 +1116,36 @@ StringPrefixEqual PROC
     push esi
     push edi
 
-CompareLoop:
-    mov  al, [edi]
-    test al, al
-    jz   PrefixEqual       ; เปรียบเทียบจบ Prefix แล้ว
-    mov  bl, [esi]
+PrefixLoop:
+    test ecx, ecx
+    jz   PrefixEqual
+    mov  al, [esi]
+    mov  bl, [edi]
+
+    cmp  al, 'a'
+    jb   NoUpper_Prefix
+    cmp  al, 'z'
+    ja   NoUpper_Prefix
+    and  al, 0DFh
+NoUpper_Prefix:
     cmp  al, bl
     jne  PrefixNotEqual
     inc  esi
     inc  edi
-    jmp  CompareLoop
+    dec  ecx
+    jmp  PrefixLoop
 
 PrefixEqual:
-    ; ตรวจสอบว่าอักขระถัดไปหลังจบ Prefix ต้องเป็น Whitespace หรือ Null Terminator
-    mov  al, [esi]
-    test al, al
-    jz   ValidPrefix
-    cmp  al, ' '
-    je   ValidPrefix
-    cmp  al, 9             ; Tab
-    je   ValidPrefix
-    cmp  al, 0Dh           ; CR (Enter)
-    je   ValidPrefix
-    cmp  al, 0Ah           ; LF (Newline)
-    je   ValidPrefix
-    xor  eax, eax          ; เป็นคำอื่น เช่น พิมพ์ ENCRYPTOR แต่ Prefix คือ ENCRYPT
-    jmp  PrefixDone
-
-ValidPrefix:
     mov  eax, 1
     jmp  PrefixDone
-
 PrefixNotEqual:
     xor  eax, eax
-
 PrefixDone:
     pop  edi
     pop  esi
     pop  ecx
     pop  ebx
     ret
-    
 StringPrefixEqual ENDP
 
 StringEqual PROC
