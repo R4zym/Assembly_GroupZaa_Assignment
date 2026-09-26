@@ -160,9 +160,22 @@ HandleKeygen:
 SkipSpace_Keygen:
     mov  al, [esi]
     cmp  al, ' '
-    jne  StartKeyConv
+    jne  CheckHexPrefix_Keygen
     inc  esi
     jmp  SkipSpace_Keygen
+
+CheckHexPrefix_Keygen:
+    test al, al
+    jz   KeygenFail
+    cmp  al, '0'
+    jne  StartKeyConv
+    mov  bl, [esi + 1]
+    cmp  bl, 'x'
+    je   SkipHexPrefix_Keygen
+    cmp  bl, 'X'
+    jne  StartKeyConv
+SkipHexPrefix_Keygen:
+    add  esi, 2
 
 StartKeyConv:
     push OFFSET desKey
@@ -182,7 +195,7 @@ KeygenFail:
     mov  edx, OFFSET msgKeyFail
     call WriteString
     jmp  MainLoop
-
+    
 ; =========================================================
 ; HANDLE ENCRYPT
 ; =========================================================
@@ -910,7 +923,7 @@ ConvertHexKey PROC
     xor  ecx, ecx
 ConvLoop:
     cmp  ecx, 8
-    jge  ConvDone
+    jge  ConvCheckLength       ; อ่านครบ 16 ตัวอักษร Hex (8 ไบต์)
 
     mov  al, [esi]
     call HexCharToNibble
@@ -931,12 +944,36 @@ ConvLoop:
     inc  ecx
     jmp  ConvLoop
 
-ConvDone:
+ConvCheckLength:
+    mov  al, [esi]
+
+    ; ตรวจสอบเฉพาะ 'h' พิมพ์เล็กต่อท้ายเท่านั้น
+    cmp  al, 'h'
+    jne  CheckDelimiter
+
+    inc  esi                   ; ข้ามตัวอักษร 'h' ไปเช็กตัวถัดไป
+    mov  al, [esi]
+
+CheckDelimiter:
+    ; ตัวถัดไปต้องเป็นจุดสิ้นสุดข้อความ (Null, Space, CR, LF) เท่านั้น
+    test al, al
+    jz   ConvSuccess
+    cmp  al, ' '
+    je   ConvSuccess
+    cmp  al, 0Dh
+    je   ConvSuccess
+    cmp  al, 0Ah
+    je   ConvSuccess
+
+    ; ถ้ายังมีตัวอักษรอื่นต่อท้าย (รวมถึง 'H' พิมพ์ใหญ่) จะมองว่าผิดกฎ
+    jmp  ConvFail
+
+ConvSuccess:
     mov  eax, 1
     jmp  ConvExit
 
 ConvFail:
-    xor  eax, eax
+    xor  eax, eax              ; คืนค่า 0 แจ้งสถานะทำงานล้มเหลว
 
 ConvExit:
     pop  edi
@@ -1078,13 +1115,23 @@ CompareLoop:
     mov  al, [edi]
     test al, al
     jz   PrefixEqual       ; เปรียบเทียบจบ Prefix แล้ว
+    
     mov  bl, [esi]
+    
+    ; --- เพิ่มการแปลงพิมพ์เล็กเป็นพิมพ์ใหญ่สำหรับ Input ---
+    cmp  bl, 'a'
+    jb   CheckMatch
+    cmp  bl, 'z'
+    ja   CheckMatch
+    and  bl, 0DFh          ; Bitwise AND เพื่อแปลง a-z ให้เป็น A-Z
+    
+CheckMatch:
     cmp  al, bl
     jne  PrefixNotEqual
     inc  esi
     inc  edi
     jmp  CompareLoop
-
+    
 PrefixEqual:
     ; ตรวจสอบว่าอักขระถัดไปหลังจบ Prefix ต้องเป็น Whitespace หรือ Null Terminator
     mov  al, [esi]
