@@ -13,7 +13,8 @@ INCLUDELIB C:\Irvine\User32.lib
 ; EXTERNAL PROTOTYPES (เชื่อมต่อ Module B, C, D)
 ; =========================================================
 GenerateKeySchedule PROTO :PTR BYTE, :PTR BYTE
-DES_ProcessBlock    PROTO :PTR BYTE, :PTR BYTE, :PTR BYTE, :DWORD
+DES_EncryptBuffer   PROTO :PTR BYTE, :DWORD, :PTR BYTE, :PTR DWORD, :PTR BYTE
+DES_DecryptBuffer   PROTO :PTR BYTE, :DWORD, :PTR BYTE, :PTR DWORD, :PTR BYTE
 DisplayHexDump      PROTO :PTR BYTE, :DWORD
 ComputeBufferStats  PROTO :PTR BYTE, :DWORD
 
@@ -74,7 +75,7 @@ SubKeyLabels    DWORD OFFSET labelK1,  OFFSET labelK2,  OFFSET labelK3,  OFFSET 
                 DWORD OFFSET labelK13, OFFSET labelK14, OFFSET labelK15, OFFSET labelK16
 
 ; =========================================================
-; ENCRYPT / DECRYPT BUFFERS & MESSAGES (ตรงตาม PDF)
+; ENCRYPT / DECRYPT BUFFERS & MESSAGES
 ; =========================================================
 inFileName      BYTE 260 DUP(0)
 outFileName     BYTE 260 DUP(0)
@@ -82,7 +83,7 @@ fileBuffer      BYTE 65536 DUP(0)
 encBuffer       BYTE 65536 DUP(0)
 fileHandle      HANDLE ?
 fileSize        DWORD ?
-paddedSize      DWORD ?
+processedSize   DWORD ?
 
 extEnc          BYTE ".enc", 0
 extDec          BYTE ".dec", 0
@@ -100,7 +101,6 @@ quoteEnd        BYTE """", 0Dh, 0Ah, 0
 
 msgFileError    BYTE "ERROR: Cannot open, read, or create file", 0Dh, 0Ah, 0
 msgParamError   BYTE "ERROR: Invalid parameters. Usage: <CMD> <filename> <key>", 0Dh, 0Ah, 0
-msgPadError     BYTE "ERROR: Invalid PKCS#7 Padding in decrypted data", 0Dh, 0Ah, 0
 msgDumpUsage    BYTE "ERROR: Invalid parameters. Usage: <CMD> <filename>", 0Dh, 0Ah, 0
 
 inputBuffer     BYTE 256 DUP(0)
@@ -155,7 +155,7 @@ MainLoop:
 ; =========================================================
 HandleKeygen:
     mov  esi, OFFSET inputBuffer
-    add  esi, 6                      ; ข้ามคำว่า "KEYGEN"
+    add  esi, 6
 
 SkipSpace_Keygen:
     mov  al, [esi]
@@ -247,7 +247,7 @@ ParseNameNoQuote_Enc:
 TerminateInFile_Enc:
     mov  BYTE PTR [edi], 0
 
-    ; สร้าง Output Name: inFileName + .enc
+    ; สร้างชื่อไฟล์ .enc
     mov  ebx, OFFSET inFileName
     mov  edi, OFFSET outFileName
 CopyNameLoop_Enc:
@@ -297,7 +297,7 @@ StartKeyConversion_Enc:
     cmp  eax, 1
     jne  EncryptFailKey
 
-    ; อ่านไฟล์เข้าหน่วยความจำ
+    ; อ่านไฟล์
     mov  edx, OFFSET inFileName
     call OpenInputFile
     cmp  eax, INVALID_HANDLE_VALUE
@@ -305,7 +305,7 @@ StartKeyConversion_Enc:
     mov  fileHandle, eax
 
     mov  edx, OFFSET fileBuffer
-    mov  ecx, SIZEOF fileBuffer - 8
+    mov  ecx, SIZEOF fileBuffer - 16
     mov  eax, fileHandle
     call ReadFromFile
     jc   CloseReadFail_Enc
@@ -314,7 +314,7 @@ StartKeyConversion_Enc:
     mov  eax, fileHandle
     call CloseFile
 
-    ; แสดงข้อความ Loading... ตาม PDF
+    ; แสดงสถานะ Loading...
     mov  edx, OFFSET msgLoad1
     call WriteString
     mov  edx, OFFSET inFileName
@@ -326,7 +326,7 @@ StartKeyConversion_Enc:
     mov  edx, OFFSET msgLoad3
     call WriteString
 
-    ; แสดงข้อความ KeyGen
+    ; แสดงสถานะ KeyGen
     mov  edx, OFFSET msgKeyGenTrace
     call WriteString
 
@@ -334,62 +334,19 @@ StartKeyConversion_Enc:
     cmp  eax, 1
     jne  EncryptFailKey
 
-; เติม PKCS#7 Padding (แก้ไข: ถ้าหาร 8 ลงตัวพอดี ไม่ต้องเพิ่มบล็อกใหม่)
-    mov  eax, fileSize
-    xor  edx, edx
-    mov  ebx, 8
-    div  ebx                     ; edx = เศษจากการหาร (fileSize % 8)
+    ; ส่งต่อให้ Module C จัดการ PKCS#7 และ ECB Mode ทั้งหมด
+    INVOKE DES_EncryptBuffer, ADDR fileBuffer, fileSize, ADDR encBuffer, ADDR processedSize, ADDR subKeys
+    test eax, eax
+    jz   EncryptFailFile
 
-    test edx, edx
-    jz   NoPaddingRequired       ; ถ้า edx == 0 (ลงตัวพอดี 8, 16 ไบต์) ให้ข้าม Padding
-
-    ; กรณีไม่ลงตัว (edx != 0) ให้เติมไบต์ส่วนขาดตามปกติ
-    mov  eax, 8
-    sub  eax, edx                ; eax = จำนวนไบต์ที่ต้องเติม (1..7 ไบต์)
-    mov  ecx, eax
-
-    mov  ebx, fileSize
-    add  ebx, eax
-    mov  paddedSize, ebx
-
-    mov  edi, OFFSET fileBuffer
-    add  edi, fileSize
-    
-PadLoop:
-    mov  [edi], cl
-    inc  edi
-    dec  eax
-    jnz  PadLoop
-    jmp  DonePadding
-
-NoPaddingRequired:
-    mov  eax, fileSize
-    mov  paddedSize, eax         ; กำหนดขนาดเท่ากับขนาดไฟล์เดิม (16 ไบต์เท่าเดิม)
-
-DonePadding:
-    ; แสดงสถานะ Processing Block
+    ; แสดงสถานะ Block Count
     mov  edx, OFFSET msgProcBlock1
     call WriteString
-    mov  eax, paddedSize
+    mov  eax, processedSize
     shr  eax, 3
     call WriteDec
     mov  edx, OFFSET msgProcBlock2
     call WriteString
-
-    ; เข้ารหัส ECB Mode
-    mov  esi, OFFSET fileBuffer
-    mov  edi, OFFSET encBuffer
-    mov  ecx, paddedSize
-    shr  ecx, 3
-
-EncryptBlockLoop:
-    push ecx
-    INVOKE DES_ProcessBlock, esi, edi, ADDR subKeys, 0
-    add  esi, 8
-    add  edi, 8
-    pop  ecx
-    dec  ecx
-    jnz  EncryptBlockLoop
 
     ; เขียนไฟล์ผลลัพธ์
     mov  edx, OFFSET outFileName
@@ -399,7 +356,7 @@ EncryptBlockLoop:
     mov  fileHandle, eax
 
     mov  edx, OFFSET encBuffer
-    mov  ecx, paddedSize
+    mov  ecx, processedSize
     mov  eax, fileHandle
     call WriteToFile
 
@@ -485,7 +442,7 @@ ParseNameNoQuote_Dec:
 TerminateInFile_Dec:
     mov  BYTE PTR [edi], 0
 
-    ; สร้าง Output Name: inFileName + .dec
+    ; สร้างชื่อไฟล์ .dec
     mov  ebx, OFFSET inFileName
     mov  edi, OFFSET outFileName
 CopyNameLoop_Dec:
@@ -583,60 +540,12 @@ StartKeyConversion_Dec:
     mov  edx, OFFSET msgProcBlock2
     call WriteString
 
-    mov  esi, OFFSET fileBuffer
-    mov  edi, OFFSET encBuffer
-    mov  ecx, fileSize
-    shr  ecx, 3
+    ; ส่งต่อให้ Module C จัดการ ECB Decrypt และตัด Padding
+    INVOKE DES_DecryptBuffer, ADDR fileBuffer, fileSize, ADDR encBuffer, ADDR processedSize, ADDR subKeys
+    test eax, eax
+    jz   DecryptFailFile
 
-DecryptBlockLoop:
-    push ecx
-    INVOKE DES_ProcessBlock, esi, edi, ADDR subKeys, 1
-    add  esi, 8
-    add  edi, 8
-    pop  ecx
-    dec  ecx
-    jnz  DecryptBlockLoop
-
-    ; =========================================================
-    ; ตรวจสอบ PKCS#7 Padding แบบยืดหยุ่น (Flexible Padding Check)
-    ; =========================================================
-    mov  esi, OFFSET encBuffer
-    add  esi, fileSize
-    dec  esi                         ; ชี้ไปที่ไบต์สุดท้าย
-    movzx ecx, BYTE PTR [esi]        ; ecx = ค่าไบต์สุดท้าย (N)
-
-    ; ถ้าไบต์สุดท้ายไม่อยู่ในช่วง 0x01 - 0x08 แสดงว่าไม่มี Padding
-    cmp  ecx, 1
-    jb   NoPadFound
-    cmp  ecx, 8
-    ja   NoPadFound
-
-    ; ตรวจสอบว่า N ไบต์สุดท้ายมีค่าเท่ากับ N ทั้งหมดหรือไม่
-    push ecx
-    mov  edx, ecx
-VerifyPadLoop:
-    mov  al, [esi]
-    cmp  al, dl
-    jne  NoPadFoundPop              ; ถ้าไม่ใช่ไบต์ Padding ให้ใช้ขนาดเดิม
-    dec  esi
-    loop VerifyPadLoop
-    pop  ecx
-
-    ; กรณีเป็น Padding จริง -> ตัด Padding ออก
-    mov  eax, fileSize
-    sub  eax, ecx
-    mov  paddedSize, eax
-    jmp  PadValid
-
-NoPadFoundPop:
-    pop  ecx
-NoPadFound:
-    ; กรณีไม่มี Padding -> ใช้ขนาดไฟล์เดิม ไม่ต้องขึ้น Error
-    mov  eax, fileSize
-    mov  paddedSize, eax
-
-PadValid:
-    ; เขียนไฟล์ผลลัพธ์ถอดรหัสออกดิสก์
+    ; เขียนไฟล์ผลลัพธ์
     mov  edx, OFFSET outFileName
     call CreateOutputFile
     cmp  eax, INVALID_HANDLE_VALUE
@@ -644,14 +553,14 @@ PadValid:
     mov  fileHandle, eax
 
     mov  edx, OFFSET encBuffer
-    mov  ecx, paddedSize
+    mov  ecx, processedSize
     mov  eax, fileHandle
     call WriteToFile
 
     mov  eax, fileHandle
     call CloseFile
 
-    ; แสดงข้อความถอดรหัสสำเร็จ
+    ; แสดงผลลัพธ์สำเร็จ
     mov  edx, OFFSET msgDecSuccess
     call WriteString
     mov  edx, OFFSET outFileName
@@ -923,7 +832,7 @@ ConvertHexKey PROC
     xor  ecx, ecx
 ConvLoop:
     cmp  ecx, 8
-    jge  ConvCheckLength       ; อ่านครบ 16 ตัวอักษร Hex (8 ไบต์)
+    jge  ConvCheckLength
 
     mov  al, [esi]
     call HexCharToNibble
@@ -947,15 +856,13 @@ ConvLoop:
 ConvCheckLength:
     mov  al, [esi]
 
-    ; ตรวจสอบเฉพาะ 'h' พิมพ์เล็กต่อท้ายเท่านั้น
     cmp  al, 'h'
     jne  CheckDelimiter
 
-    inc  esi                   ; ข้ามตัวอักษร 'h' ไปเช็กตัวถัดไป
+    inc  esi
     mov  al, [esi]
 
 CheckDelimiter:
-    ; ตัวถัดไปต้องเป็นจุดสิ้นสุดข้อความ (Null, Space, CR, LF) เท่านั้น
     test al, al
     jz   ConvSuccess
     cmp  al, ' '
@@ -965,7 +872,6 @@ CheckDelimiter:
     cmp  al, 0Ah
     je   ConvSuccess
 
-    ; ถ้ายังมีตัวอักษรอื่นต่อท้าย (รวมถึง 'H' พิมพ์ใหญ่) จะมองว่าผิดกฎ
     jmp  ConvFail
 
 ConvSuccess:
@@ -973,7 +879,7 @@ ConvSuccess:
     jmp  ConvExit
 
 ConvFail:
-    xor  eax, eax              ; คืนค่า 0 แจ้งสถานะทำงานล้มเหลว
+    xor  eax, eax
 
 ConvExit:
     pop  edi
@@ -1016,10 +922,9 @@ InvalidHex:
 HexCharToNibble ENDP
 
 ; =========================================================
-; ParseCommand - รองรับ Case-Insensitive (a-z และ A-Z)
+; ParseCommand - Case-Insensitive (a-z และ A-Z)
 ; =========================================================
 ParseCommand PROC
-
     push ebp
     mov  ebp, esp
     push ebx
@@ -1114,16 +1019,15 @@ StringPrefixEqual PROC
 CompareLoop:
     mov  al, [edi]
     test al, al
-    jz   PrefixEqual       ; เปรียบเทียบจบ Prefix แล้ว
+    jz   PrefixEqual
     
     mov  bl, [esi]
     
-    ; --- เพิ่มการแปลงพิมพ์เล็กเป็นพิมพ์ใหญ่สำหรับ Input ---
     cmp  bl, 'a'
     jb   CheckMatch
     cmp  bl, 'z'
     ja   CheckMatch
-    and  bl, 0DFh          ; Bitwise AND เพื่อแปลง a-z ให้เป็น A-Z
+    and  bl, 0DFh
     
 CheckMatch:
     cmp  al, bl
@@ -1133,19 +1037,18 @@ CheckMatch:
     jmp  CompareLoop
     
 PrefixEqual:
-    ; ตรวจสอบว่าอักขระถัดไปหลังจบ Prefix ต้องเป็น Whitespace หรือ Null Terminator
     mov  al, [esi]
     test al, al
     jz   ValidPrefix
     cmp  al, ' '
     je   ValidPrefix
-    cmp  al, 9             ; Tab
+    cmp  al, 9
     je   ValidPrefix
-    cmp  al, 0Dh           ; CR (Enter)
+    cmp  al, 0Dh
     je   ValidPrefix
-    cmp  al, 0Ah           ; LF (Newline)
+    cmp  al, 0Ah
     je   ValidPrefix
-    xor  eax, eax          ; เป็นคำอื่น เช่น พิมพ์ ENCRYPTOR แต่ Prefix คือ ENCRYPT
+    xor  eax, eax
     jmp  PrefixDone
 
 ValidPrefix:
@@ -1161,7 +1064,6 @@ PrefixDone:
     pop  ecx
     pop  ebx
     ret
-    
 StringPrefixEqual ENDP
 
 StringEqual PROC

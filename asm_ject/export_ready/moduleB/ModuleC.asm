@@ -1,10 +1,10 @@
-TITLE Module C - DES 16-Round Feistel Core Engine
+TITLE Module C - DES 16-Round Feistel Core Engine with ECB & PKCS#7
 
 .386
 .model flat, stdcall
 OPTION CASEMAP:NONE
 
-INCLUDE ModuleC.inc
+; ตัด INCLUDE ModuleC.inc ออกเพื่อป้องกัน conflicting parameter definition กับ PROC
 
 .data
 
@@ -80,24 +80,12 @@ S_Boxes  BYTE 14,  4, 13,  1,  2, 15, 11,  8,  3, 10,  6, 12,  5,  9,  0,  7
          BYTE  7, 11,  4,  1,  9, 12, 14,  2,  0,  6, 10, 13, 15,  3,  5,  8
          BYTE  2,  1, 14,  7,  4, 10,  8, 13, 15, 12,  9,  0,  3,  5,  6, 11
 
-; GenerateKeySchedule is declared by ModuleB.inc
-
-
 .code
 
 PUBLIC DES_FeistelFunction
 PUBLIC DES_ProcessBlock
-
-; =========================================================
-; MAIN PROCEDURE
-; =========================================================
-
-
-; =========================================================
-; HELPER: PrintHexBlock
-; =========================================================
-
-
+PUBLIC DES_EncryptBuffer
+PUBLIC DES_DecryptBuffer
 
 ; =========================================================
 ; HELPER: ExtractBit
@@ -112,14 +100,14 @@ ExtractBit PROC
 
     mov  esi, [ebp + 8]
     mov  eax, [ebp + 12]
-    dec  eax                   ; 0-indexed
+    dec  eax
 
     mov  ebx, eax
-    shr  ebx, 3                 ; Byte Index
+    shr  ebx, 3
 
-    and  eax, 7                 ; Bit Offset
+    and  eax, 7
     mov  edx, 7
-    sub  edx, eax               ; Big-endian MSB bit offset
+    sub  edx, eax
     mov  cl, dl
 
     movzx eax, BYTE PTR [esi + ebx]
@@ -135,7 +123,6 @@ ExtractBit PROC
     ret  8
 ExtractBit ENDP
 
-
 ; =========================================================
 ; HELPER: SetBit
 ; =========================================================
@@ -149,10 +136,10 @@ SetBit PROC
 
     mov  esi, [ebp + 8]
     mov  eax, [ebp + 12]
-    dec  eax                   ; 0-indexed
+    dec  eax
 
     mov  ebx, eax
-    shr  ebx, 3                 ; Byte Index
+    shr  ebx, 3
 
     and  eax, 7
     mov  edx, 7
@@ -184,7 +171,6 @@ SetBitDone:
     ret  12
 SetBit ENDP
 
-
 ; =========================================================
 ; CORE: PermuteData
 ; =========================================================
@@ -197,14 +183,14 @@ PermuteData PROC
     push esi
     push edi
 
-    mov  esi, [ebp + 8]         ; Input
-    mov  edi, [ebp + 12]        ; Output
-    mov  ebx, [ebp + 16]        ; Table
-    mov  ecx, [ebp + 20]        ; Total bits
+    mov  esi, [ebp + 8]
+    mov  edi, [ebp + 12]
+    mov  ebx, [ebp + 16]
+    mov  ecx, [ebp + 20]
 
     mov  eax, ecx
     add  eax, 7
-    shr  eax, 3                 ; numBytes
+    shr  eax, 3
     push ecx
     mov  ecx, eax
     push edi
@@ -229,12 +215,12 @@ PermLoop:
 
     mov  ebx, edx
     inc  ebx
-    push eax                    ; Bit val
-    push ebx                    ; Bit pos
+    push eax
+    push ebx
     push edi
     call SetBit
 
-    mov  ebx, [ebp + 16]        ; Restore Table ptr
+    mov  ebx, [ebp + 16]
     inc  edx
     jmp  PermLoop
 
@@ -248,7 +234,6 @@ PermDone:
     pop  ebp
     ret  16
 PermuteData ENDP
-
 
 ; =========================================================
 ; CORE: DES_FeistelFunction f(R, K)
@@ -291,13 +276,12 @@ XorSubkeyDone:
 
     ; 3. S-Box Lookups
     mov  DWORD PTR sboxOut, 0
-    xor  ecx, ecx               ; S-Box index (0-7)
+    xor  ecx, ecx
 
 SBoxLoop:
     cmp  ecx, 8
     jge  SBoxDone
 
-    ; Bit 1 -> Row bit 1
     mov  eax, ecx
     imul eax, 6
     inc  eax
@@ -309,7 +293,6 @@ SBoxLoop:
     mov  ebx, eax
     shl  ebx, 1
 
-    ; Bit 6 -> Row bit 0
     mov  eax, ecx
     imul eax, 6
     add  eax, 6
@@ -317,9 +300,8 @@ SBoxLoop:
     lea  edx, xorBuffer
     push edx
     call ExtractBit
-    or   ebx, eax               ; ebx = Row (0-3)
+    or   ebx, eax
 
-    ; Bits 2-5 -> Column
     xor  edi, edi
     mov  edx, 1
 
@@ -330,7 +312,7 @@ ColLoop:
     mov  eax, ecx
     imul eax, 6
     add  eax, edx
-    inc  eax                    ; bit position
+    inc  eax
     push eax
     lea  eax, xorBuffer
     push eax
@@ -343,7 +325,6 @@ ColLoop:
     jmp  ColLoop
 ColDone:
 
-    ; Offset S-Box = (i * 64) + (Row * 16) + Column
     mov  eax, ecx
     shl  eax, 6
     mov  edx, ebx
@@ -353,22 +334,21 @@ ColDone:
 
     movzx eax, BYTE PTR S_Boxes[eax]
 
-;  4  sboxOut Buffer
-    push ecx                    ; เก็บ S-Box Index
-    push eax                    ; บันทึกค่าผลลัพธ์ S-Box ไว้บน Stack
+    push ecx
+    push eax
     mov  edx, 0
 
 Write4BitsLoop:
     cmp  edx, 4
     jge  Write4BitsDone
 
-    mov  ebx, [esp]             ; อ่านค่า S-Box เดิมจาก Stack ([esp])
+    mov  ebx, [esp]
     mov  cl, 3
     sub  cl, dl
     shr  ebx, cl
     and  ebx, 1
 
-    mov  esi, [esp + 4]         ; อ่าน S-Box Index จาก Stack ([esp + 4])
+    mov  esi, [esp + 4]
     imul esi, 4
     add  esi, edx
     inc  esi
@@ -383,8 +363,8 @@ Write4BitsLoop:
     jmp  Write4BitsLoop
 
 Write4BitsDone:
-    add  esp, 4                 ; คืนพื้นที่ Stack ของค่า S-Box
-    pop  ecx                    ; คืนค่า ECX (S-Box Index)
+    add  esp, 4
+    pop  ecx
     inc  ecx
     jmp  SBoxLoop
 
@@ -405,7 +385,6 @@ SBoxDone:
     pop  ebx
     ret  
 DES_FeistelFunction ENDP
-
 
 ; =========================================================
 ; CORE: DES_ProcessBlock (Single 64-bit Block)
@@ -539,5 +518,156 @@ FeistelDone:
     pop  ebx
     ret  
 DES_ProcessBlock ENDP
+
+; =========================================================
+; CORE: DES_EncryptBuffer (ECB + PKCS#7)
+; =========================================================
+DES_EncryptBuffer PROC pInBuf:PTR BYTE, inLen:DWORD, pOutBuf:PTR BYTE, pOutLen:PTR DWORD, pSubKeys:PTR BYTE
+    push ebx
+    push ecx
+    push edx
+    push esi
+    push edi
+
+    mov  eax, inLen
+    xor  edx, edx
+    mov  ebx, 8
+    div  ebx
+
+    test edx, edx
+    jz   NoEncPadReq
+
+    mov  eax, 8
+    sub  eax, edx
+    mov  ecx, eax
+
+    mov  ebx, inLen
+    add  ebx, eax
+
+    mov  edi, pInBuf
+    add  edi, inLen
+PadWriteLoop:
+    mov  BYTE PTR [edi], cl
+    inc  edi
+    dec  eax
+    jnz  PadWriteLoop
+    jmp  SaveEncPaddedSize
+
+NoEncPadReq:
+    mov  ebx, inLen
+
+SaveEncPaddedSize:
+    mov  edx, pOutLen
+    test edx, edx
+    jz   EncBufFail
+    mov  [edx], ebx
+
+    mov  esi, pInBuf
+    mov  edi, pOutBuf
+    mov  ecx, ebx
+    shr  ecx, 3
+
+ECB_EncLoop:
+    push ecx
+    INVOKE DES_ProcessBlock, esi, edi, pSubKeys, 0
+    add  esi, 8
+    add  edi, 8
+    pop  ecx
+    dec  ecx
+    jnz  ECB_EncLoop
+
+    mov  eax, 1
+    jmp  EncBufDone
+
+EncBufFail:
+    xor  eax, eax
+
+EncBufDone:
+    pop  edi
+    pop  esi
+    pop  edx
+    pop  ecx
+    pop  ebx
+    ret
+DES_EncryptBuffer ENDP
+
+; =========================================================
+; CORE: DES_DecryptBuffer (ECB + PKCS#7 Strip)
+; =========================================================
+DES_DecryptBuffer PROC pInBuf:PTR BYTE, inLen:DWORD, pOutBuf:PTR BYTE, pOutLen:PTR DWORD, pSubKeys:PTR BYTE
+    push ebx
+    push ecx
+    push edx
+    push esi
+    push edi
+
+    mov  eax, inLen
+    test eax, eax
+    jz   DecBufFail
+    test eax, 7
+    jnz  DecBufFail
+
+    mov  esi, pInBuf
+    mov  edi, pOutBuf
+    mov  ecx, inLen
+    shr  ecx, 3
+
+ECB_DecLoop:
+    push ecx
+    INVOKE DES_ProcessBlock, esi, edi, pSubKeys, 1
+    add  esi, 8
+    add  edi, 8
+    pop  ecx
+    dec  ecx
+    jnz  ECB_DecLoop
+
+    mov  esi, pOutBuf
+    add  esi, inLen
+    dec  esi
+    movzx ecx, BYTE PTR [esi]
+
+    cmp  ecx, 1
+    jb   DecNoPad
+    cmp  ecx, 8
+    ja   DecNoPad
+
+    push ecx
+    mov  edx, ecx
+DecVerifyLoop:
+    mov  al, [esi]
+    cmp  al, dl
+    jne  DecVerifyFail
+    dec  esi
+    loop DecVerifyLoop
+    pop  ecx
+
+    mov  eax, inLen
+    sub  eax, ecx
+    jmp  SaveDecLen
+
+DecVerifyFail:
+    pop  ecx
+DecNoPad:
+    mov  eax, inLen
+
+SaveDecLen:
+    mov  edx, pOutLen
+    test edx, edx
+    jz   DecBufFail
+    mov  [edx], eax
+    mov  eax, 1
+    jmp  DecBufDone
+
+DecBufFail:
+    xor  eax, eax
+
+DecBufDone:
+    pop  edi
+    pop  esi
+    pop  edx
+    pop  ecx
+    pop  ebx
+    ret
+DES_DecryptBuffer ENDP
 
 END
