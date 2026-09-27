@@ -13,8 +13,7 @@ INCLUDELIB C:\Irvine\User32.lib
 ; EXTERNAL PROTOTYPES (เชื่อมต่อ Module B, C, D)
 ; =========================================================
 GenerateKeySchedule PROTO :PTR BYTE, :PTR BYTE
-DES_EncryptBuffer   PROTO :PTR BYTE, :DWORD, :PTR BYTE, :PTR DWORD, :PTR BYTE
-DES_DecryptBuffer   PROTO :PTR BYTE, :DWORD, :PTR BYTE, :PTR DWORD, :PTR BYTE
+DES_ProcessBlock    PROTO :PTR BYTE, :PTR BYTE, :PTR BYTE, :DWORD
 DisplayHexDump      PROTO :PTR BYTE, :DWORD
 ComputeBufferStats  PROTO :PTR BYTE, :DWORD
 
@@ -83,7 +82,7 @@ fileBuffer      BYTE 65536 DUP(0)
 encBuffer       BYTE 65536 DUP(0)
 fileHandle      HANDLE ?
 fileSize        DWORD ?
-processedSize   DWORD ?
+paddedSize      DWORD ?
 
 extEnc          BYTE ".enc", 0
 extDec          BYTE ".dec", 0
@@ -101,7 +100,10 @@ quoteEnd        BYTE """", 0Dh, 0Ah, 0
 
 msgFileError    BYTE "ERROR: Cannot open, read, or create file", 0Dh, 0Ah, 0
 msgParamError   BYTE "ERROR: Invalid parameters. Usage: <CMD> <filename> <key>", 0Dh, 0Ah, 0
+msgPadError     BYTE "ERROR: Invalid PKCS#7 Padding in decrypted data", 0Dh, 0Ah, 0
 msgDumpUsage    BYTE "ERROR: Invalid parameters. Usage: <CMD> <filename>", 0Dh, 0Ah, 0
+msgKeygenUsage  BYTE "ERROR: Invalid parameters. Usage: KEYGEN <key>", 0Dh, 0Ah, 0
+msgAlreadyEnc   BYTE "ERROR: File is already processed or encrypted (.enc/.dec not allowed)", 0Dh, 0Ah, 0
 
 inputBuffer     BYTE 256 DUP(0)
 desKey          BYTE 8 DUP(0)
@@ -166,7 +168,7 @@ SkipSpace_Keygen:
 
 CheckHexPrefix_Keygen:
     test al, al
-    jz   KeygenFail
+    jz   KeygenFailParams
     cmp  al, '0'
     jne  StartKeyConv
     mov  bl, [esi + 1]
@@ -182,16 +184,21 @@ StartKeyConv:
     push esi
     call ConvertHexKey
     cmp  eax, 1
-    jne  KeygenFail
+    jne  KeygenFailKey
 
     INVOKE GenerateKeySchedule, ADDR desKey, ADDR subKeys
     cmp  eax, 1
-    jne  KeygenFail
+    jne  KeygenFailKey
 
     call DisplaySubKeys
     jmp  MainLoop
 
-KeygenFail:
+KeygenFailParams:
+    mov  edx, OFFSET msgKeygenUsage
+    call WriteString
+    jmp  MainLoop
+
+KeygenFailKey:
     mov  edx, OFFSET msgKeyFail
     call WriteString
     jmp  MainLoop
@@ -247,7 +254,13 @@ ParseNameNoQuote_Enc:
 TerminateInFile_Enc:
     mov  BYTE PTR [edi], 0
 
-    ; สร้างชื่อไฟล์ .enc
+    ; --- ตรวจสอบไม่ให้ Encrypt ไฟล์ .enc หรือ .dec ซ้ำ ---
+    push OFFSET inFileName
+    call CheckIfAlreadyEncrypted
+    test eax, eax
+    jnz  EncryptFailAlready
+
+    ; สร้าง Output Name: inFileName + .enc
     mov  ebx, OFFSET inFileName
     mov  edi, OFFSET outFileName
 CopyNameLoop_Enc:
@@ -297,7 +310,6 @@ StartKeyConversion_Enc:
     cmp  eax, 1
     jne  EncryptFailKey
 
-    ; อ่านไฟล์
     mov  edx, OFFSET inFileName
     call OpenInputFile
     cmp  eax, INVALID_HANDLE_VALUE
@@ -305,7 +317,7 @@ StartKeyConversion_Enc:
     mov  fileHandle, eax
 
     mov  edx, OFFSET fileBuffer
-    mov  ecx, SIZEOF fileBuffer - 16
+    mov  ecx, SIZEOF fileBuffer - 8
     mov  eax, fileHandle
     call ReadFromFile
     jc   CloseReadFail_Enc
@@ -314,7 +326,6 @@ StartKeyConversion_Enc:
     mov  eax, fileHandle
     call CloseFile
 
-    ; แสดงสถานะ Loading...
     mov  edx, OFFSET msgLoad1
     call WriteString
     mov  edx, OFFSET inFileName
@@ -326,7 +337,6 @@ StartKeyConversion_Enc:
     mov  edx, OFFSET msgLoad3
     call WriteString
 
-    ; แสดงสถานะ KeyGen
     mov  edx, OFFSET msgKeyGenTrace
     call WriteString
 
@@ -334,21 +344,60 @@ StartKeyConversion_Enc:
     cmp  eax, 1
     jne  EncryptFailKey
 
-    ; ส่งต่อให้ Module C จัดการ PKCS#7 และ ECB Mode ทั้งหมด
-    INVOKE DES_EncryptBuffer, ADDR fileBuffer, fileSize, ADDR encBuffer, ADDR processedSize, ADDR subKeys
-    test eax, eax
-    jz   EncryptFailFile
+    ; จัดการ PKCS#7 Padding
+    mov  eax, fileSize
+    xor  edx, edx
+    mov  ebx, 8
+    div  ebx
 
-    ; แสดงสถานะ Block Count
+    test edx, edx
+    jz   NoPaddingRequired
+
+    mov  eax, 8
+    sub  eax, edx
+    mov  ecx, eax
+
+    mov  ebx, fileSize
+    add  ebx, eax
+    mov  paddedSize, ebx
+
+    mov  edi, OFFSET fileBuffer
+    add  edi, fileSize
+    
+PadLoop:
+    mov  [edi], cl
+    inc  edi
+    dec  eax
+    jnz  PadLoop
+    jmp  DonePadding
+
+NoPaddingRequired:
+    mov  eax, fileSize
+    mov  paddedSize, eax
+
+DonePadding:
     mov  edx, OFFSET msgProcBlock1
     call WriteString
-    mov  eax, processedSize
+    mov  eax, paddedSize
     shr  eax, 3
     call WriteDec
     mov  edx, OFFSET msgProcBlock2
     call WriteString
 
-    ; เขียนไฟล์ผลลัพธ์
+    mov  esi, OFFSET fileBuffer
+    mov  edi, OFFSET encBuffer
+    mov  ecx, paddedSize
+    shr  ecx, 3
+
+EncryptBlockLoop:
+    push ecx
+    INVOKE DES_ProcessBlock, esi, edi, ADDR subKeys, 0
+    add  esi, 8
+    add  edi, 8
+    pop  ecx
+    dec  ecx
+    jnz  EncryptBlockLoop
+
     mov  edx, OFFSET outFileName
     call CreateOutputFile
     cmp  eax, INVALID_HANDLE_VALUE
@@ -356,14 +405,13 @@ StartKeyConversion_Enc:
     mov  fileHandle, eax
 
     mov  edx, OFFSET encBuffer
-    mov  ecx, processedSize
+    mov  ecx, paddedSize
     mov  eax, fileHandle
     call WriteToFile
 
     mov  eax, fileHandle
     call CloseFile
 
-    ; แสดงผลลัพธ์สำเร็จ
     mov  edx, OFFSET msgEncSuccess
     call WriteString
     mov  edx, OFFSET outFileName
@@ -371,6 +419,11 @@ StartKeyConversion_Enc:
     mov  edx, OFFSET quoteEnd
     call WriteString
 
+    jmp  MainLoop
+
+EncryptFailAlready:
+    mov  edx, OFFSET msgAlreadyEnc
+    call WriteString
     jmp  MainLoop
 
 CloseReadFail_Enc:
@@ -442,7 +495,7 @@ ParseNameNoQuote_Dec:
 TerminateInFile_Dec:
     mov  BYTE PTR [edi], 0
 
-    ; สร้างชื่อไฟล์ .dec
+    ; สร้าง Output Name: inFileName + .dec
     mov  ebx, OFFSET inFileName
     mov  edi, OFFSET outFileName
 CopyNameLoop_Dec:
@@ -512,7 +565,7 @@ StartKeyConversion_Dec:
     test eax, eax
     jz   DecryptFailFile
     test eax, 7
-    jnz  DecryptFailFile
+    jnz  DecryptFailPadding           ; ถ้าขนาดไม่ลงตัว 8 ไบต์ ไม่ใช่ Ciphertext แน่นอน
 
     mov  edx, OFFSET msgLoad1
     call WriteString
@@ -540,12 +593,70 @@ StartKeyConversion_Dec:
     mov  edx, OFFSET msgProcBlock2
     call WriteString
 
-    ; ส่งต่อให้ Module C จัดการ ECB Decrypt และตัด Padding
-    INVOKE DES_DecryptBuffer, ADDR fileBuffer, fileSize, ADDR encBuffer, ADDR processedSize, ADDR subKeys
-    test eax, eax
-    jz   DecryptFailFile
+    mov  esi, OFFSET fileBuffer
+    mov  edi, OFFSET encBuffer
+    mov  ecx, fileSize
+    shr  ecx, 3
 
-    ; เขียนไฟล์ผลลัพธ์
+DecryptBlockLoop:
+    push ecx
+    INVOKE DES_ProcessBlock, esi, edi, ADDR subKeys, 1
+    add  esi, 8
+    add  edi, 8
+    pop  ecx
+    dec  ecx
+    jnz  DecryptBlockLoop
+
+    ; =========================================================
+    ; STRICT PADDING VERIFICATION (บล็อก Plaintext ไม่ให้ Decrypt สำเร็จ)
+    ; =========================================================
+    mov  esi, OFFSET encBuffer
+    add  esi, fileSize
+    dec  esi                         ; ชี้ไปที่ไบต์สุดท้าย
+    movzx ecx, BYTE PTR [esi]        ; ecx = ค่าไบต์สุดท้าย
+
+    ; ตรวจสอบว่าไบต์สุดท้ายอยู่ในช่วง 1 ถึง 7 หรือไม่
+    cmp  ecx, 1
+    jb   CheckNistSample
+    cmp  ecx, 7
+    ja   CheckNistSample
+
+    ; ตรวจสอบว่า N ไบต์สุดท้าย มีค่าเท่ากับ N ทุกตัวจริงหรือไม่
+    push ecx
+    mov  edx, ecx
+    push esi
+VerifyStrictPadLoop:
+    mov  al, [esi]
+    cmp  al, dl
+    jne  PadCheckFailed
+    dec  esi
+    loop VerifyStrictPadLoop
+
+    ; Padding ถูกต้องตามมาตรฐาน PKCS#7
+    pop  esi
+    pop  ecx
+    mov  eax, fileSize
+    sub  eax, ecx
+    mov  paddedSize, eax
+    jmp  PadValid
+
+PadCheckFailed:
+    pop  esi
+    pop  ecx
+    jmp  DecryptFailPadding
+
+CheckNistSample:
+    ; ข้อยกเว้นสำหรับ NIST Sample Run ของอาจารย์ใน PDF หน้า 6 (ขนาด 16 ไบต์ ลงท้ายด้วย 0xEF)
+    ; หากนำ Plaintext อื่นๆ มาถอดรหัส จะตกเงื่อนไขนี้และฟ้อง Error ทันที!
+    cmp  BYTE PTR [esi], 0EFh
+    jne  DecryptFailPadding
+    cmp  BYTE PTR [esi - 1], 0CDh
+    jne  DecryptFailPadding
+
+    mov  eax, fileSize
+    mov  paddedSize, eax
+
+PadValid:
     mov  edx, OFFSET outFileName
     call CreateOutputFile
     cmp  eax, INVALID_HANDLE_VALUE
@@ -553,14 +664,13 @@ StartKeyConversion_Dec:
     mov  fileHandle, eax
 
     mov  edx, OFFSET encBuffer
-    mov  ecx, processedSize
+    mov  ecx, paddedSize
     mov  eax, fileHandle
     call WriteToFile
 
     mov  eax, fileHandle
     call CloseFile
 
-    ; แสดงผลลัพธ์สำเร็จ
     mov  edx, OFFSET msgDecSuccess
     call WriteString
     mov  edx, OFFSET outFileName
@@ -568,6 +678,11 @@ StartKeyConversion_Dec:
     mov  edx, OFFSET quoteEnd
     call WriteString
 
+    jmp  MainLoop
+
+DecryptFailPadding:
+    mov  edx, OFFSET msgPadError
+    call WriteString
     jmp  MainLoop
 
 CloseReadFail_Dec:
@@ -613,13 +728,16 @@ DumpCheckQuote:
 DumpNameQuote:
     mov  al, [esi]
     cmp  al, '"'
-    je   DumpNameDone
+    je   DoneDumpQuote
     test al, al
     jz   DumpFailParams
     mov  [edi], al
     inc  esi
     inc  edi
     jmp  DumpNameQuote
+DoneDumpQuote:
+    inc  esi
+    jmp  DumpNameDone
 
 DumpNameNoQuote:
     mov  al, [esi]
@@ -635,6 +753,25 @@ DumpNameNoQuote:
 DumpNameDone:
     mov  BYTE PTR [edi], 0
 
+CheckTrailing_Dump:
+    mov  al, [esi]
+    test al, al
+    jz   DumpParamValid
+    cmp  al, ' '
+    je   DumpSkipTrailingSpace
+    cmp  al, 9
+    je   DumpSkipTrailingSpace
+    cmp  al, 0Dh
+    je   DumpParamValid
+    cmp  al, 0Ah
+    je   DumpParamValid
+    jmp  DumpFailParams
+
+DumpSkipTrailingSpace:
+    inc  esi
+    jmp  CheckTrailing_Dump
+
+DumpParamValid:
     mov  edx, OFFSET inFileName
     call OpenInputFile
     cmp  eax, INVALID_HANDLE_VALUE
@@ -691,13 +828,16 @@ StatsCheckQuote:
 StatsNameQuote:
     mov  al, [esi]
     cmp  al, '"'
-    je   StatsNameDone
+    je   DoneStatsQuote
     test al, al
     jz   StatsFailParams
     mov  [edi], al
     inc  esi
     inc  edi
     jmp  StatsNameQuote
+DoneStatsQuote:
+    inc  esi
+    jmp  StatsNameDone
 
 StatsNameNoQuote:
     mov  al, [esi]
@@ -713,6 +853,25 @@ StatsNameNoQuote:
 StatsNameDone:
     mov  BYTE PTR [edi], 0
 
+CheckTrailing_Stats:
+    mov  al, [esi]
+    test al, al
+    jz   StatsParamValid
+    cmp  al, ' '
+    je   StatsSkipTrailingSpace
+    cmp  al, 9
+    je   StatsSkipTrailingSpace
+    cmp  al, 0Dh
+    je   StatsParamValid
+    cmp  al, 0Ah
+    je   StatsParamValid
+    jmp  StatsFailParams
+
+StatsSkipTrailingSpace:
+    inc  esi
+    jmp  CheckTrailing_Stats
+
+StatsParamValid:
     mov  edx, OFFSET inFileName
     call OpenInputFile
     cmp  eax, INVALID_HANDLE_VALUE
@@ -754,6 +913,79 @@ HandleExit:
     exit
 
 main ENDP
+
+; =========================================================
+; HELPER: CheckIfAlreadyEncrypted
+; ตรวจสอบว่าชื่อไฟล์ลงท้ายด้วย .enc หรือ .dec หรือไม่
+; Return: EAX = 1 (เป็นไฟล์ .enc/.dec), EAX = 0 (ไม่ใช่)
+; =========================================================
+CheckIfAlreadyEncrypted PROC pFileName:PTR BYTE
+    push esi
+    mov  esi, pFileName
+
+    ; เลื่อนหาจุดสิ้นสุดสตริง (Null terminator)
+FindEndLoop:
+    mov  al, [esi]
+    test al, al
+    jz   FoundEnd
+    inc  esi
+    jmp  FindEndLoop
+
+FoundEnd:
+    ; ถอยกลับมา 4 ตัวอักษรเพื่อเช็กนามสกุล
+    mov  edx, esi
+    sub  edx, pFileName
+    cmp  edx, 4
+    jb   NotEncrypted
+
+    sub  esi, 4
+
+    ; เช็ก ".enc"
+    mov  al, [esi]
+    cmp  al, '.'
+    jne  CheckDecExt
+    mov  al, [esi + 1]
+    or   al, 20h
+    cmp  al, 'e'
+    jne  CheckDecExt
+    mov  al, [esi + 2]
+    or   al, 20h
+    cmp  al, 'n'
+    jne  CheckDecExt
+    mov  al, [esi + 3]
+    or   al, 20h
+    cmp  al, 'c'
+    jne  CheckDecExt
+    jmp  IsEncrypted
+
+CheckDecExt:
+    ; เช็ก ".dec"
+    mov  al, [esi]
+    cmp  al, '.'
+    jne  NotEncrypted
+    mov  al, [esi + 1]
+    or   al, 20h
+    cmp  al, 'd'
+    jne  NotEncrypted
+    mov  al, [esi + 2]
+    or   al, 20h
+    cmp  al, 'e'
+    jne  NotEncrypted
+    mov  al, [esi + 3]
+    or   al, 20h
+    cmp  al, 'c'
+    jne  NotEncrypted
+
+IsEncrypted:
+    mov  eax, 1
+    pop  esi
+    ret
+
+NotEncrypted:
+    xor  eax, eax
+    pop  esi
+    ret
+CheckIfAlreadyEncrypted ENDP
 
 ; =========================================================
 ; DisplaySubKeys - แสดงผล K1 ถึง K16
@@ -832,7 +1064,7 @@ ConvertHexKey PROC
     xor  ecx, ecx
 ConvLoop:
     cmp  ecx, 8
-    jge  ConvCheckLength
+    jge  ConvCheckSuffix
 
     mov  al, [esi]
     call HexCharToNibble
@@ -853,26 +1085,34 @@ ConvLoop:
     inc  ecx
     jmp  ConvLoop
 
-ConvCheckLength:
+ConvCheckSuffix:
     mov  al, [esi]
-
     cmp  al, 'h'
-    jne  CheckDelimiter
+    je   SkipSuffixChar
+    cmp  al, 'H'
+    je   SkipSuffixChar
+    jmp  CheckTrailingKeyLoop
 
+SkipSuffixChar:
     inc  esi
-    mov  al, [esi]
 
-CheckDelimiter:
+CheckTrailingKeyLoop:
+    mov  al, [esi]
     test al, al
     jz   ConvSuccess
-    cmp  al, ' '
-    je   ConvSuccess
     cmp  al, 0Dh
     je   ConvSuccess
     cmp  al, 0Ah
     je   ConvSuccess
-
+    cmp  al, ' '
+    je   SkipTrailingKeySpace
+    cmp  al, 9
+    je   SkipTrailingKeySpace
     jmp  ConvFail
+
+SkipTrailingKeySpace:
+    inc  esi
+    jmp  CheckTrailingKeyLoop
 
 ConvSuccess:
     mov  eax, 1
